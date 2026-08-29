@@ -7,7 +7,7 @@ pub mod win32 {
     use super::*;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use windows_sys::Win32::Foundation::*;
     use windows_sys::Win32::Graphics::Dwm::*;
     use windows_sys::Win32::Graphics::Gdi::*;
@@ -20,6 +20,7 @@ pub mod win32 {
     pub static SYSTRAY_HWND: AtomicUsize = AtomicUsize::new(0);
     pub static BAR_HWND: AtomicUsize = AtomicUsize::new(0);
     pub static APP_RUNNING: AtomicBool = AtomicBool::new(true);
+    pub static AUTOSTART_ENABLED: AtomicBool = AtomicBool::new(false);
 
     pub const WM_APP_TRAY: u32 = WM_APP + 1;
     pub const WM_APP_HOTKEY: u32 = WM_APP + 2;
@@ -72,6 +73,14 @@ pub mod win32 {
             WM_SETFOCUS => {
                 // Bloque la prise de focus clavier directe sur le bandeau
                 return 0;
+            }
+            WM_RBUTTONUP | WM_CONTEXTMENU => {
+                let tray_hwnd = SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
+                if !tray_hwnd.is_null() {
+                    let is_auto = AUTOSTART_ENABLED.load(Ordering::SeqCst);
+                    show_tray_context_menu(tray_hwnd, is_auto);
+                    return 0;
+                }
             }
             _ => {}
         }

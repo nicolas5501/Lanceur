@@ -488,6 +488,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Enregistrer tous les raccourcis configurés
                 {
                     let cfg = app_cfg_clone.lock().unwrap();
+                    win32_utils::win32::AUTOSTART_ENABLED.store(cfg.settings.autostart, Ordering::SeqCst);
                     register_all_hotkeys_for_app(msg_hwnd, &cfg);
                 }
 
@@ -579,6 +580,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let mut c = cfg_for_cmd.lock().unwrap();
                             c.settings.autostart = !c.settings.autostart;
                             let _ = win32_utils::win32::set_autostart(c.settings.autostart);
+                            win32_utils::win32::AUTOSTART_ENABLED.store(c.settings.autostart, Ordering::SeqCst);
                             save_config(&c);
                         }
                         win32_utils::win32::IDM_QUIT => {
@@ -1258,6 +1260,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     use windows_sys::Win32::Foundation::HWND;
                     let _ = win32_utils::win32::set_autostart(cfg.settings.autostart);
+                    win32_utils::win32::AUTOSTART_ENABLED.store(cfg.settings.autostart, Ordering::SeqCst);
 
                     let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
                     if !hwnd.is_null() {
