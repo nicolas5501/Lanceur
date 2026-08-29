@@ -363,6 +363,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cfg.settings.bar_y,
                     cfg.settings.bar_width,
                     is_expanded,
+                    cfg.settings.stay_on_top,
                 );
             }
         };
@@ -428,10 +429,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     WM_DROPFILES => {
                         use windows_sys::Win32::UI::Shell::*;
                         let hdrop = wparam as HDROP;
-                        let count = DragQueryFileW(hdrop, 0xffffffff, std::ptr::null_mut(), 0);
+                        let count = unsafe { DragQueryFileW(hdrop, 0xffffffff, std::ptr::null_mut(), 0) };
                         for i in 0..count {
                             let mut buf: [u16; 512] = [0; 512];
-                            let len = DragQueryFileW(hdrop, i, buf.as_mut_ptr(), 512);
+                            let len = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), 512) };
                             if len > 0 {
                                 let path = String::from_utf16_lossy(&buf[..len as usize]);
                                 TRAY_HANDLER.with(|th| {
@@ -441,9 +442,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 });
                             }
                         }
-                        DragFinish(hdrop);
+                        unsafe { DragFinish(hdrop); }
                     }
-                    _ => return DefWindowProcW(hwnd, msg, wparam, lparam),
+                    _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
                 }
                 0
             }
@@ -558,14 +559,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         use windows_sys::Win32::UI::WindowsAndMessaging::*;
                                         let bring_to_front = || {
                                             let title_wide = win32_utils::win32::to_wide_null("⚙️ Configuration du Lanceur");
-                                            let hwnd: HWND = unsafe { FindWindowW(std::ptr::null(), title_wide.as_ptr()) };
+                                            let hwnd: HWND = FindWindowW(std::ptr::null(), title_wide.as_ptr());
                                             if !hwnd.is_null() {
-                                                unsafe {
-                                                    ShowWindow(hwnd, SW_RESTORE);
-                                                    SetForegroundWindow(hwnd);
-                                                    BringWindowToTop(hwnd);
-                                                    windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(hwnd);
-                                                }
+                                                ShowWindow(hwnd, SW_RESTORE);
+                                                SetForegroundWindow(hwnd);
+                                                BringWindowToTop(hwnd);
+                                                windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(hwnd);
                                             }
                                         };
                                         bring_to_front();
@@ -717,7 +716,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         cfg.settings.bar_y,
                         cfg.settings.bar_width,
                         is_expanded,
+                        cfg.settings.stay_on_top,
                     );
+                }
+            }
+        });
+    }
+
+    // Menu contextuel au clic droit sur le bandeau
+    {
+        let app_cfg_clone = app_config.clone();
+        bar_window.on_show_context_menu(move || {
+            #[cfg(windows)]
+            {
+                use windows_sys::Win32::Foundation::HWND;
+                let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
+                if !tray_hwnd.is_null() {
+                    let is_auto = app_cfg_clone.lock().unwrap().settings.autostart;
+                    win32_utils::win32::show_tray_context_menu(tray_hwnd, is_auto);
                 }
             }
         });
@@ -1254,6 +1270,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             cfg.settings.bar_y,
                             cfg.settings.bar_width,
                             false,
+                            cfg.settings.stay_on_top,
                         );
                     }
 

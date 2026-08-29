@@ -34,6 +34,7 @@ component DropdownItemRow inherits Rectangle {
     in property <color> custom_bg: #00000000;
     in property <color> custom_text: #ffffff;
     callback clicked;
+    callback right_clicked;
 
     height: root.item_h;
     background: itm_touch.has-hover ? (root.custom_bg.alpha > 0 ? root.custom_bg : #2563eb) : #00000000;
@@ -90,6 +91,11 @@ component DropdownItemRow inherits Rectangle {
     itm_touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                root.right_clicked();
+            }
+        }
     }
 }
 
@@ -115,6 +121,7 @@ export component BarWindow inherits Window {
     callback open_settings();
     callback dropdown_state_changed(bool);
     callback container_width_changed(int, length);
+    callback show_context_menu();
 
     VerticalLayout {
         alignment: root.bar_position == "Bottom" ? end : start;
@@ -129,7 +136,7 @@ export component BarWindow inherits Window {
             border-width: 1px;
             border-color: #334155aa;
 
-            // TouchArea d'arrière-plan du bandeau pour fermer le menu déroulant au survol du fond vide
+            // TouchArea d'arrière-plan du bandeau : gestion du clic droit et fermeture du popover
             bar_bg_touch := TouchArea {
                 pointer-event(event) => {
                     if event.kind == PointerEventKind.move {
@@ -137,6 +144,9 @@ export component BarWindow inherits Window {
                             root.active_dropdown_idx = -1;
                             root.dropdown_state_changed(false);
                         }
+                    }
+                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                        root.show_context_menu();
                     }
                 }
             }
@@ -194,7 +204,7 @@ export component BarWindow inherits Window {
                             }
                         }
 
-                        // TouchArea pour ouvrir le menu au survol du conteneur
+                        // TouchArea pour ouvrir le menu au survol et ouvrir le clic droit
                         c_touch := TouchArea {
                             mouse-cursor: pointer;
                             pointer-event(event) => {
@@ -203,6 +213,9 @@ export component BarWindow inherits Window {
                                         root.active_dropdown_idx = idx;
                                         root.dropdown_state_changed(true);
                                     }
+                                }
+                                if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                                    root.show_context_menu();
                                 }
                             }
                         }
@@ -259,6 +272,9 @@ export component BarWindow inherits Window {
                                     root.active_dropdown_idx = -1;
                                     root.dropdown_state_changed(false);
                                     root.launch_item(itm.target);
+                                }
+                                right_clicked => {
+                                    root.show_context_menu();
                                 }
                             }
                         }

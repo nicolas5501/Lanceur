@@ -33,7 +33,7 @@ pub mod win32 {
         OsStr::new(s).encode_wide().chain(Some(0)).collect()
     }
 
-    /// Subclass Window Procedure pour intercepter et détruire tout rendu de barre de titre ou cadre non-client
+    /// Subclass Window Procedure pour intercepter et détruire tout rendu de barre de titre ou vol de focus
     unsafe extern "system" fn bar_wnd_proc_hook(
         hwnd: HWND,
         msg: u32,
@@ -65,18 +65,26 @@ pub mod win32 {
                 // Empêche formellement la fenêtre de voler ou conserver le focus lors des clics souris
                 return MA_NOACTIVATE as isize;
             }
+            WM_ACTIVATE => {
+                // Bloque l'activation standard de la fenêtre
+                return 0;
+            }
+            WM_SETFOCUS => {
+                // Bloque la prise de focus clavier directe sur le bandeau
+                return 0;
+            }
             _ => {}
         }
         unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
     }
 
-    /// Applique les styles ToolWindow, TopMost, NoActivate et le Subclassing pour éliminer 100% des barres blanches
+    /// Applique les styles ToolWindow, TopMost, NoActivate et le Subclassing pour éliminer 100% des barres blanches et vols de focus
     pub fn setup_bar_window_styles(hwnd: HWND, stay_on_top: bool) {
         if hwnd.is_null() {
             return;
         }
         unsafe {
-            // 1. Installer le Subclassing Windows pour bloquer WM_NCCALCSIZE, WM_NCACTIVATE, WM_NCPAINT
+            // 1. Installer le Subclassing Windows pour bloquer WM_NCCALCSIZE, WM_NCACTIVATE, WM_NCPAINT, WM_MOUSEACTIVATE
             SetWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101, 0);
 
             // 2. Nettoyer le titre
@@ -163,7 +171,16 @@ pub mod win32 {
     }
 
     /// Repositionne et redimensionne strictement la fenêtre sans bloquer les fenêtres en arrière-plan
-    pub fn position_bar_window(hwnd: HWND, position: &str, bar_h: i32, bar_x: i32, bar_y: i32, bar_w: i32, is_expanded: bool) {
+    pub fn position_bar_window(
+        hwnd: HWND,
+        position: &str,
+        bar_h: i32,
+        bar_x: i32,
+        bar_y: i32,
+        bar_w: i32,
+        is_expanded: bool,
+        stay_on_top: bool,
+    ) {
         if hwnd.is_null() {
             return;
         }
@@ -187,10 +204,12 @@ pub mod win32 {
             }
         };
 
+        let insert_after = if stay_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
+
         unsafe {
             SetWindowPos(
                 hwnd,
-                HWND_TOPMOST,
+                insert_after,
                 x,
                 y,
                 w,
@@ -289,7 +308,7 @@ pub mod win32 {
         }
     }
 
-    /// Affiche le menu contextuel du Systray
+    /// Affiche le menu contextuel (Systray ou Clic Droit sur le bandeau)
     pub fn show_tray_context_menu(hwnd: HWND, is_autostart: bool) {
         unsafe {
             let menu = CreatePopupMenu();
@@ -470,7 +489,7 @@ pub mod win32 {
 pub mod win32 {
     use super::*;
     pub fn setup_bar_window_styles(_hwnd: *mut std::ffi::c_void, _stay_on_top: bool) {}
-    pub fn position_bar_window(_hwnd: *mut std::ffi::c_void, _pos: &str, _h: i32, _x: i32, _y: i32, _w: i32, _exp: bool) {}
+    pub fn position_bar_window(_hwnd: *mut std::ffi::c_void, _pos: &str, _h: i32, _x: i32, _y: i32, _w: i32, _exp: bool, _stay: bool) {}
     pub fn register_hotkey_combo(_hwnd: *mut std::ffi::c_void, _id: i32, _mods: &[String], _key: &str) -> bool { true }
     pub fn unregister_hotkey_id(_hwnd: *mut std::ffi::c_void, _id: i32) {}
     pub fn create_tray_icon(_hwnd: *mut std::ffi::c_void, _tip: &str) -> bool { true }
