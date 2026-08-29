@@ -1,0 +1,865 @@
+import { LineEdit, ScrollView, ComboBox, CheckBox, Slider, Button } from "std-widgets.slint";
+
+export struct ContainerItemSummary {
+    id: string,
+    name: string,
+    icon: string,
+    width_val: float,
+    display_mode: string,
+    bg_color: string,
+    text_color: string,
+    items_count: int,
+    hotkey_display: string,
+}
+
+export struct ItemDetailData {
+    id: string,
+    name: string,
+    target: string,
+    icon_type: string,
+    icon_value: string,
+    container_id: string,
+    bg_color: string,
+    text_color: string,
+    hotkey_display: string,
+}
+
+export component SettingsWindow inherits Window {
+    title: "⚙️ Configuration du Lanceur";
+    preferred-width: 900px;
+    preferred-height: 660px;
+    min-width: 820px;
+    min-height: 560px;
+    background: #0f172a;
+    default-font-family: "Segoe UI, system-ui, sans-serif";
+
+    in-out property <int> active_tab: 0; // 0: Conteneurs & Items, 1: Apparence & Système
+    in-out property <bool> show_saved_toast: false;
+
+    // Données Conteneurs
+    in property <[ContainerItemSummary]> containers_list: [];
+    in-out property <int> selected_container_index: 0;
+    in-out property <string> edit_container_name: "";
+    in-out property <string> edit_container_icon: "";
+    in-out property <float> edit_container_width: 0;
+    in-out property <string> edit_container_display_mode: "Both";
+    in-out property <string> edit_container_bg: "";
+    in-out property <string> edit_container_text: "";
+    in-out property <bool> edit_cont_mod_ctrl: false;
+    in-out property <bool> edit_cont_mod_alt: false;
+    in-out property <bool> edit_cont_mod_shift: false;
+    in-out property <bool> edit_cont_mod_win: false;
+    in-out property <string> edit_cont_hotkey_key: "";
+
+    // Données Items du conteneur sélectionné
+    in property <[ItemDetailData]> items_list: [];
+    in-out property <int> selected_item_index: -1;
+    in-out property <bool> show_item_editor: false;
+    in-out property <string> item_edit_name: "";
+    in-out property <string> item_edit_target: "";
+    in-out property <string> item_edit_icon_type: "emoji";
+    in-out property <string> item_edit_icon_value: "🚀";
+    in-out property <string> item_edit_bg: "";
+    in-out property <string> item_edit_text: "";
+    in-out property <int> item_target_container_idx: 0;
+    in-out property <bool> item_edit_mod_ctrl: false;
+    in-out property <bool> item_edit_mod_alt: false;
+    in-out property <bool> item_edit_mod_shift: false;
+    in-out property <bool> item_edit_mod_win: false;
+    in-out property <string> item_edit_hotkey_key: "";
+    in property <[string]> container_names: [];
+
+    // Paramètres Apparence & Système
+    in-out property <string> pref_position: "Top";
+    in-out property <string> pref_containers_align: "Left";
+    in-out property <float> pref_bar_h: 36;
+    in-out property <float> pref_item_h: 26;
+    in-out property <float> pref_cont_font: 11;
+    in-out property <float> pref_item_font: 11;
+    in-out property <string> pref_bar_bg_color: "#0f172af8";
+    in-out property <string> pref_bar_text_color: "#f8fafc";
+    in-out property <bool> pref_mod_ctrl: true;
+    in-out property <bool> pref_mod_alt: false;
+    in-out property <bool> pref_mod_shift: false;
+    in-out property <bool> pref_mod_win: false;
+    in-out property <string> pref_hotkey_key: "Space";
+    in-out property <bool> pref_autostart: false;
+    in-out property <bool> pref_stay_on_top: true;
+
+    // Callbacks Conteneurs
+    callback select_container(int);
+    callback add_container();
+    callback delete_container(int);
+    callback move_container_up(int);
+    callback move_container_down(int);
+    callback save_container_info();
+
+    // Callbacks Items
+    callback open_add_item();
+    callback open_edit_item(int);
+    callback delete_item(int);
+    callback move_item_up(int);
+    callback move_item_down(int);
+    callback duplicate_item(int, int);
+    callback move_item_to_container(int, int);
+    callback browse_item_target();
+    callback save_item_editor();
+
+    // Callbacks Paramètres généraux
+    callback save_all_preferences();
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+
+        // Barre d'onglets avec bouton Enregistrer calé tout à droite
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: center;
+
+            Rectangle {
+                height: 38px;
+                background: root.active_tab == 0 ? #2563eb : #1e293b;
+                border-radius: 8px;
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    alignment: center;
+                    Text {
+                        text: "📦 Conteneurs & Raccourcis";
+                        color: #ffffff;
+                        font-weight: 700;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                    }
+                }
+                TouchArea { clicked => { root.active_tab = 0; } }
+            }
+
+            Rectangle {
+                height: 38px;
+                background: root.active_tab == 1 ? #2563eb : #1e293b;
+                border-radius: 8px;
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    alignment: center;
+                    Text {
+                        text: "🎨 Couleurs, Apparence & Système";
+                        color: #ffffff;
+                        font-weight: 700;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                    }
+                }
+                TouchArea { clicked => { root.active_tab = 1; } }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            // Bouton de validation calé sur le bord droit
+            Rectangle {
+                height: 38px;
+                background: save_touch.has_hover ? #15803d : #16a34a;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #22c55e;
+                animate background { duration: 120ms; }
+
+                HorizontalLayout {
+                    padding-left: 18px;
+                    padding-right: 18px;
+                    alignment: center;
+                    Text {
+                        text: "💾 Enregistrer & Appliquer";
+                        color: #ffffff;
+                        font-weight: 700;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                    }
+                }
+                save_touch := TouchArea {
+                    clicked => {
+                        root.save_all_preferences();
+                    }
+                }
+            }
+        }
+
+        // ================= ONGLET 1 : CONTENEURS & ITEMS =================
+        if root.active_tab == 0 : HorizontalLayout {
+            spacing: 14px;
+            vertical-stretch: 1;
+
+            // Panneau Gauche : Liste des Conteneurs
+            Rectangle {
+                width: 330px;
+                background: #1e293b;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: #334155;
+
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    HorizontalLayout {
+                        Text {
+                            text: "Conteneurs";
+                            font-size: 14px;
+                            font-weight: 800;
+                            color: #93c5fd;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        Button {
+                            text: "➕ Nouveau";
+                            clicked => { root.add_container(); }
+                        }
+                    }
+
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 6px;
+                            for cont[idx] in root.containers_list : Rectangle {
+                                height: 48px;
+                                border-radius: 6px;
+                                background: idx == root.selected_container_index ? #3b82f633 : #0f172a88;
+                                border-width: 1px;
+                                border-color: idx == root.selected_container_index ? #3b82f6 : #33415544;
+
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 6px;
+                                    alignment: center;
+
+                                    Text {
+                                        text: cont.icon;
+                                        font-size: 16px;
+                                        vertical-alignment: center;
+                                    }
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        alignment: center;
+                                        spacing: 1px;
+                                        Text {
+                                            text: cont.name;
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                            color: #f8fafc;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+                                        if cont.hotkey_display != "" : Text {
+                                            text: "⌨️ " + cont.hotkey_display;
+                                            font-size: 10px;
+                                            color: #60a5fa;
+                                        }
+                                    }
+                                    Text {
+                                        text: "(" + cont.items_count + ")";
+                                        font-size: 11px;
+                                        color: #64748b;
+                                        vertical-alignment: center;
+                                    }
+
+                                    // Boutons d'action centrés verticalement
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        alignment: center;
+
+                                        Rectangle {
+                                            width: 24px; height: 24px; border-radius: 4px; background: #334155;
+                                            Text { text: "⬆"; font-size: 11px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                            TouchArea { clicked => { root.move_container_up(idx); } }
+                                        }
+                                        Rectangle {
+                                            width: 24px; height: 24px; border-radius: 4px; background: #334155;
+                                            Text { text: "⬇"; font-size: 11px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                            TouchArea { clicked => { root.move_container_down(idx); } }
+                                        }
+                                        Rectangle {
+                                            width: 24px; height: 24px; border-radius: 4px; background: #7f1d1d;
+                                            Text { text: "🗑"; font-size: 11px; color: #fca5a5; horizontal-alignment: center; vertical-alignment: center; }
+                                            TouchArea { clicked => { root.delete_container(idx); } }
+                                        }
+                                    }
+                                }
+
+                                TouchArea {
+                                    clicked => { root.select_container(idx); }
+                                }
+                            }
+                        }
+                    }
+
+                    // Édition rapide, couleurs et combo clavier du conteneur sélectionné
+                    Rectangle {
+                        background: #0f172a;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: #334155;
+
+                        VerticalLayout {
+                            padding: 8px;
+                            spacing: 5px;
+
+                            Text { text: "Éditer le conteneur sélectionné :"; font-size: 11px; color: #94a3b8; font-weight: 600; }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                LineEdit {
+                                    text <=> root.edit_container_icon;
+                                    placeholder-text: "Icône";
+                                    width: 44px;
+                                    edited => { root.save_container_info(); }
+                                }
+                                LineEdit {
+                                    text <=> root.edit_container_name;
+                                    placeholder-text: "Nom";
+                                    horizontal-stretch: 1;
+                                    edited => { root.save_container_info(); }
+                                }
+                            }
+
+                            // Mode d'affichage
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text { text: "Affichage :"; font-size: 11px; color: #94a3b8; vertical-alignment: center; width: 85px; }
+                                ComboBox {
+                                    model: ["Icône + Nom", "Icône seulement", "Nom seulement"];
+                                    current-value: root.edit_container_display_mode == "Both" ? "Icône + Nom" : (root.edit_container_display_mode == "IconOnly" ? "Icône seulement" : "Nom seulement");
+                                    selected(val) => {
+                                        if val == "Icône + Nom" { root.edit_container_display_mode = "Both"; }
+                                        if val == "Icône seulement" { root.edit_container_display_mode = "IconOnly"; }
+                                        if val == "Nom seulement" { root.edit_container_display_mode = "NameOnly"; }
+                                        root.save_container_info();
+                                    }
+                                }
+                            }
+
+                            // Couleurs du conteneur (Fond & Texte)
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text { text: "Couleur Fond / Texte :"; font-size: 10px; color: #94a3b8; vertical-alignment: center; width: 110px; }
+                                LineEdit {
+                                    text <=> root.edit_container_bg;
+                                    placeholder-text: "#1e293b";
+                                    horizontal-stretch: 1;
+                                    edited => { root.save_container_info(); }
+                                }
+                                LineEdit {
+                                    text <=> root.edit_container_text;
+                                    placeholder-text: "#f8fafc";
+                                    horizontal-stretch: 1;
+                                    edited => { root.save_container_info(); }
+                                }
+                            }
+
+                            // Largeur
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text { text: "Largeur (" + (root.edit_container_width > 0 ? round(root.edit_container_width) + "px" : "Auto") + ") :"; font-size: 11px; color: #94a3b8; vertical-alignment: center; width: 85px; }
+                                Slider {
+                                    minimum: 0;
+                                    maximum: 260;
+                                    value <=> root.edit_container_width;
+                                    changed => { root.save_container_info(); }
+                                }
+                            }
+
+                            // Raccourci Dédié
+                            Text { text: "Raccourci Dédié :"; font-size: 10px; color: #94a3b8; }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                alignment: center;
+                                CheckBox { text: "Ctrl"; checked <=> root.edit_cont_mod_ctrl; toggled => { root.save_container_info(); } }
+                                CheckBox { text: "Alt"; checked <=> root.edit_cont_mod_alt; toggled => { root.save_container_info(); } }
+                                CheckBox { text: "Win"; checked <=> root.edit_cont_mod_win; toggled => { root.save_container_info(); } }
+                                ComboBox {
+                                    model: ["", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"];
+                                    current-value <=> root.edit_cont_hotkey_key;
+                                    selected => { root.save_container_info(); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Panneau Droit : Items du Conteneur
+            Rectangle {
+                horizontal-stretch: 1;
+                background: #1e293b;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: #334155;
+
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    HorizontalLayout {
+                        Text {
+                            text: "Items du conteneur";
+                            font-size: 14px;
+                            font-weight: 800;
+                            color: #93c5fd;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        Button {
+                            text: "➕ Ajouter un item";
+                            clicked => { root.open_add_item(); }
+                        }
+                    }
+
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 6px;
+
+                            if root.items_list.length == 0 : Rectangle {
+                                height: 100px;
+                                background: #0f172a44;
+                                border-radius: 6px;
+                                Text {
+                                    text: "Aucun item dans ce conteneur.\nCliquez sur '+ Ajouter un item' ou glissez un fichier depuis Windows.";
+                                    color: #64748b;
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            for itm[idx] in root.items_list : Rectangle {
+                                height: 52px;
+                                border-radius: 6px;
+                                background: #0f172a;
+                                border-width: 1px;
+                                border-color: #33415566;
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: center;
+
+                                    Text {
+                                        text: itm.icon_value;
+                                        font-size: 18px;
+                                        vertical-alignment: center;
+                                    }
+
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        alignment: center;
+                                        spacing: 1px;
+                                        HorizontalLayout {
+                                            spacing: 6px;
+                                            Text {
+                                                text: itm.name;
+                                                font-size: 13px;
+                                                font-weight: 700;
+                                                color: #f8fafc;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                            if itm.hotkey_display != "" : Rectangle {
+                                                background: #334155;
+                                                border-radius: 3px;
+                                                height: 16px;
+                                                HorizontalLayout {
+                                                    padding-left: 4px;
+                                                    padding-right: 4px;
+                                                    Text {
+                                                        text: "⌨️ " + itm.hotkey_display;
+                                                        font-size: 10px;
+                                                        color: #93c5fd;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Text {
+                                            text: itm.target;
+                                            font-size: 11px;
+                                            color: #64748b;
+                                            overflow: elide;
+                                        }
+                                    }
+
+                                    // Boutons d'actions bien centrés verticalement
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        alignment: center;
+
+                                        Rectangle {
+                                            width: 26px; height: 26px; border-radius: 4px; background: #334155;
+                                            Text { text: "⬆"; font-size: 11px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                            TouchArea { clicked => { root.move_item_up(idx); } }
+                                        }
+                                        Rectangle {
+                                            width: 26px; height: 26px; border-radius: 4px; background: #334155;
+                                            Text { text: "⬇"; font-size: 11px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                            TouchArea { clicked => { root.move_item_down(idx); } }
+                                        }
+                                        Rectangle {
+                                            width: 28px; height: 26px; border-radius: 4px; background: #0284c7;
+                                            Text { text: "✏"; font-size: 11px; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                                            TouchArea { clicked => { root.open_edit_item(idx); } }
+                                        }
+                                        Rectangle {
+                                            width: 28px; height: 26px; border-radius: 4px; background: #0d9488;
+                                            Text { text: "📋"; font-size: 11px; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                                            TouchArea { clicked => { root.duplicate_item(idx, root.selected_container_index); } }
+                                        }
+                                        Rectangle {
+                                            width: 28px; height: 26px; border-radius: 4px; background: #991b1b;
+                                            Text { text: "🗑"; font-size: 11px; color: #fca5a5; horizontal-alignment: center; vertical-alignment: center; }
+                                            TouchArea { clicked => { root.delete_item(idx); } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ================= ONGLET 2 : COULEURS, APPARENCE & SYSTÈME =================
+        if root.active_tab == 1 : Rectangle {
+            vertical-stretch: 1;
+            background: #1e293b;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: #334155;
+
+            ScrollView {
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 16px;
+
+                    Text { text: "🎨 Personnalisation des Couleurs du Bandeau"; font-size: 15px; font-weight: 800; color: #93c5fd; }
+
+                    // Couleur de fond du bandeau
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Couleur de fond du bandeau (Hex) :"; font-size: 13px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; width: 250px; }
+                        LineEdit {
+                            text <=> root.pref_bar_bg_color;
+                            placeholder-text: "#0f172af8";
+                            horizontal-stretch: 1;
+                        }
+                    }
+
+                    // Couleur du texte du bandeau
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Couleur de police par défaut (Hex) :"; font-size: 13px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; width: 250px; }
+                        LineEdit {
+                            text <=> root.pref_bar_text_color;
+                            placeholder-text: "#f8fafc";
+                            horizontal-stretch: 1;
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: #334155; }
+
+                    Text { text: "📐 Dimensions & Ergonomie du Bandeau"; font-size: 15px; font-weight: 800; color: #93c5fd; }
+
+                    // Position du bandeau
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Positionnement du bandeau :"; font-size: 13px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; width: 250px; }
+                        ComboBox {
+                            model: ["Haut d'écran (Top)", "Bas d'écran (Bottom)", "Flottant (Floating)"];
+                            current-value: root.pref_position == "Top" ? "Haut d'écran (Top)" : (root.pref_position == "Bottom" ? "Bas d'écran (Bottom)" : "Flottant (Floating)");
+                            selected(val) => {
+                                if val == "Haut d'écran (Top)" { root.pref_position = "Top"; }
+                                if val == "Bas d'écran (Bottom)" { root.pref_position = "Bottom"; }
+                                if val == "Flottant (Floating)" { root.pref_position = "Floating"; }
+                            }
+                        }
+                    }
+
+                    // Alignement des conteneurs
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Alignement des conteneurs :"; font-size: 13px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; width: 250px; }
+                        ComboBox {
+                            model: ["Aligné à Gauche", "Centré", "Aligné à Droite"];
+                            current-value: root.pref_containers_align == "Center" ? "Centré" : (root.pref_containers_align == "Right" ? "Aligné à Droite" : "Aligné à Gauche");
+                            selected(val) => {
+                                if val == "Aligné à Gauche" { root.pref_containers_align = "Left"; }
+                                if val == "Centré" { root.pref_containers_align = "Center"; }
+                                if val == "Aligné à Droite" { root.pref_containers_align = "Right"; }
+                            }
+                        }
+                    }
+
+                    // Hauteur du bandeau
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Hauteur du bandeau (" + round(root.pref_bar_h) + " px) :"; font-size: 13px; color: #cbd5e1; vertical-alignment: center; width: 250px; }
+                        Slider {
+                            minimum: 28;
+                            maximum: 70;
+                            value <=> root.pref_bar_h;
+                            horizontal-stretch: 1;
+                        }
+                    }
+
+                    // Hauteur des items
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Hauteur des items (" + round(root.pref_item_h) + " px) :"; font-size: 13px; color: #cbd5e1; vertical-alignment: center; width: 250px; }
+                        Slider {
+                            minimum: 20;
+                            maximum: 60;
+                            value <=> root.pref_item_h;
+                            horizontal-stretch: 1;
+                        }
+                    }
+
+                    // Taille police conteneurs
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Taille texte Conteneurs (" + round(root.pref_cont_font) + " px) :"; font-size: 13px; color: #cbd5e1; vertical-alignment: center; width: 250px; }
+                        Slider {
+                            minimum: 9;
+                            maximum: 20;
+                            value <=> root.pref_cont_font;
+                            horizontal-stretch: 1;
+                        }
+                    }
+
+                    // Taille police items
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Taille texte Items (" + round(root.pref_item_font) + " px) :"; font-size: 13px; color: #cbd5e1; vertical-alignment: center; width: 250px; }
+                        Slider {
+                            minimum: 9;
+                            maximum: 20;
+                            value <=> root.pref_item_font;
+                            horizontal-stretch: 1;
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: #334155; }
+
+                    Text { text: "⌨️ Raccourci Clavier Global (Afficher / Masquer)"; font-size: 15px; font-weight: 800; color: #93c5fd; }
+
+                    HorizontalLayout {
+                        spacing: 14px;
+                        alignment: center;
+                        CheckBox { text: "Ctrl"; checked <=> root.pref_mod_ctrl; }
+                        CheckBox { text: "Alt"; checked <=> root.pref_mod_alt; }
+                        CheckBox { text: "Shift"; checked <=> root.pref_mod_shift; }
+                        CheckBox { text: "Win"; checked <=> root.pref_mod_win; }
+                        Text { text: "+ Touche :"; color: #cbd5e1; vertical-alignment: center; }
+                        ComboBox {
+                            model: ["Space", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Tab", "Escape", "1", "2", "3", "4", "5", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
+                            current-value <=> root.pref_hotkey_key;
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: #334155; }
+
+                    Text { text: "🛡️ Comportement Système & Bureau"; font-size: 15px; font-weight: 800; color: #93c5fd; }
+
+                    CheckBox {
+                        text: "Lancer automatiquement au démarrage de Windows (Systray)";
+                        checked <=> root.pref_autostart;
+                    }
+
+                    CheckBox {
+                        text: "Garder toujours au premier plan & persistant après Win + D";
+                        checked <=> root.pref_stay_on_top;
+                    }
+                }
+            }
+        }
+    }
+
+    // ================= TOAST DE VALIDATION DANS LE COIN SUPÉRIEUR DROIT =================
+    if root.show_saved_toast : Rectangle {
+        x: parent.width - 340px;
+        y: 60px;
+        width: 320px;
+        height: 70px;
+        background: #064e3bee;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: #10b981;
+        drop-shadow-blur: 14px;
+        drop-shadow-color: #000000bb;
+
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            spacing: 10px;
+            alignment: center;
+
+            Text {
+                text: "✓";
+                color: #34d399;
+                font-size: 24px;
+                font-weight: 800;
+                vertical-alignment: center;
+            }
+
+            VerticalLayout {
+                spacing: 2px;
+                alignment: center;
+                horizontal-stretch: 1;
+
+                Text {
+                    text: "Paramètres Enregistrés !";
+                    color: #ecfdf5;
+                    font-size: 13px;
+                    font-weight: 800;
+                }
+                Text {
+                    text: "Modifications appliquées en direct.";
+                    color: #a7f3d0;
+                    font-size: 11px;
+                }
+            }
+        }
+    }
+
+    // ================= MODALE ÉDITEUR D'ITEM =================
+    if root.show_item_editor : Rectangle {
+        background: #000000bb;
+
+        Rectangle {
+            width: 560px;
+            height: 520px;
+            background: #1e293b;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: #3b82f6;
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 10px;
+
+                Text {
+                    text: root.selected_item_index >= 0 ? "✏️ Modifier l'item" : "✨ Ajouter un nouvel item";
+                    font-size: 16px;
+                    font-weight: 800;
+                    color: #f8fafc;
+                }
+
+                Text { text: "Nom :"; font-size: 12px; font-weight: 600; color: #94a3b8; }
+                LineEdit {
+                    text <=> root.item_edit_name;
+                    placeholder-text: "Ex: Visual Studio Code";
+                }
+
+                Text { text: "Cible (Chemin de fichier .exe, URL, Dossier) :"; font-size: 12px; font-weight: 600; color: #94a3b8; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit {
+                        text <=> root.item_edit_target;
+                        placeholder-text: "C:\\... ou https://...";
+                        horizontal-stretch: 1;
+                    }
+                    Button {
+                        text: "Parcourir...";
+                        clicked => { root.browse_item_target(); }
+                    }
+                }
+
+                Text { text: "Icône (Emoji ou extraction automatique depuis le fichier) :"; font-size: 12px; font-weight: 600; color: #94a3b8; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    ComboBox {
+                        model: ["emoji", "extracted"];
+                        current-value <=> root.item_edit_icon_type;
+                        width: 120px;
+                    }
+                    LineEdit {
+                        text <=> root.item_edit_icon_value;
+                        placeholder-text: "Emoji (ex: 🚀, 📁, 🌐)";
+                        horizontal-stretch: 1;
+                    }
+                }
+
+                // Couleurs personnalisées pour cet item
+                Text { text: "Couleur de Fond au Survol / Couleur de Police (Hex) :"; font-size: 12px; font-weight: 600; color: #94a3b8; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit {
+                        text <=> root.item_edit_bg;
+                        placeholder-text: "Fond ex: #2563eb";
+                        horizontal-stretch: 1;
+                    }
+                    LineEdit {
+                        text <=> root.item_edit_text;
+                        placeholder-text: "Texte ex: #ffffff";
+                        horizontal-stretch: 1;
+                    }
+                }
+
+                // Combo Clavier Dédié pour cet Item
+                Text { text: "⌨️ Raccourci Clavier Global Dédié pour lancer cet item :"; font-size: 12px; font-weight: 600; color: #94a3b8; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: center;
+                    CheckBox { text: "Ctrl"; checked <=> root.item_edit_mod_ctrl; }
+                    CheckBox { text: "Alt"; checked <=> root.item_edit_mod_alt; }
+                    CheckBox { text: "Shift"; checked <=> root.item_edit_mod_shift; }
+                    CheckBox { text: "Win"; checked <=> root.item_edit_mod_win; }
+                    ComboBox {
+                        model: ["", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "1", "2", "3", "4", "5", "6", "7", "8", "9", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"];
+                        current-value <=> root.item_edit_hotkey_key;
+                        horizontal-stretch: 1;
+                    }
+                }
+
+                if root.selected_item_index >= 0 : Text { text: "Déplacer / Dupliquer vers un autre conteneur :"; font-size: 12px; font-weight: 600; color: #94a3b8; }
+                if root.selected_item_index >= 0 : HorizontalLayout {
+                    spacing: 8px;
+                    ComboBox {
+                        model: root.container_names;
+                        current-index <=> root.item_target_container_idx;
+                        horizontal-stretch: 1;
+                    }
+                    Button {
+                        text: "Déplacer";
+                        clicked => {
+                            root.move_item_to_container(root.selected_item_index, root.item_target_container_idx);
+                        }
+                    }
+                    Button {
+                        text: "Dupliquer";
+                        clicked => {
+                            root.duplicate_item(root.selected_item_index, root.item_target_container_idx);
+                        }
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: end;
+
+                    Button {
+                        text: "Annuler";
+                        clicked => { root.show_item_editor = false; }
+                    }
+                    Button {
+                        text: "💾 Sauvegarder";
+                        clicked => { root.save_item_editor(); }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,15 @@
+# Build & Binaries
+/target/
+*.exe
+*.pdb
+
+# Rust & Backups
+**/*.rs.bk
+
+# Local User Configuration & Cache (optionnel pour ne pas écraser les chemins locaux)
+launcher_config.json
+/icon_cache/
+shortcuts.json
+
+# Archives
+*.zip

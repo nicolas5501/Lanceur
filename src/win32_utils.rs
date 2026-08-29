@@ -1,0 +1,482 @@
+#![allow(dead_code)]
+
+use std::path::{Path, PathBuf};
+
+#[cfg(windows)]
+pub mod win32 {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use windows_sys::Win32::Foundation::*;
+    use windows_sys::Win32::Graphics::Dwm::*;
+    use windows_sys::Win32::Graphics::Gdi::*;
+    use windows_sys::Win32::System::Registry::*;
+    use windows_sys::Win32::UI::Controls::*;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+    use windows_sys::Win32::UI::Shell::*;
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+    pub static SYSTRAY_HWND: AtomicUsize = AtomicUsize::new(0);
+    pub static BAR_HWND: AtomicUsize = AtomicUsize::new(0);
+    pub static APP_RUNNING: AtomicBool = AtomicBool::new(true);
+
+    pub const WM_APP_TRAY: u32 = WM_APP + 1;
+    pub const WM_APP_HOTKEY: u32 = WM_APP + 2;
+    pub const IDM_SHOW_HIDE: usize = 1001;
+    pub const IDM_SETTINGS: usize = 1002;
+    pub const IDM_AUTOSTART: usize = 1003;
+    pub const IDM_QUIT: usize = 1004;
+    pub const MAIN_HOTKEY_ID: i32 = 9001;
+
+    pub fn to_wide_null(s: &str) -> Vec<u16> {
+        OsStr::new(s).encode_wide().chain(Some(0)).collect()
+    }
+
+    /// Subclass Window Procedure pour intercepter et détruire tout rendu de barre de titre ou cadre non-client
+    unsafe extern "system" fn bar_wnd_proc_hook(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _uid_subclass: usize,
+        _ref_data: usize,
+    ) -> LRESULT {
+        match msg {
+            WM_NCCALCSIZE => {
+                if wparam != 0 {
+                    // Supprime tout cadre non-client : toute la fenêtre est 100% zone cliente
+                    return 0;
+                }
+            }
+            WM_NCACTIVATE => {
+                // Empêche Windows de dessiner la barre de titre lors du changement de focus
+                return 1;
+            }
+            WM_NCPAINT => {
+                // Bloque tout dessin non-client (cadre blanc, ombre DWM non désirée)
+                return 0;
+            }
+            WM_ERASEBKGND => {
+                // Évite tout flash blanc d'effacement de fond
+                return 1;
+            }
+            WM_MOUSEACTIVATE => {
+                // Empêche formellement la fenêtre de voler ou conserver le focus lors des clics souris
+                return MA_NOACTIVATE as isize;
+            }
+            _ => {}
+        }
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+
+    /// Applique les styles ToolWindow, TopMost, NoActivate et le Subclassing pour éliminer 100% des barres blanches
+    pub fn setup_bar_window_styles(hwnd: HWND, stay_on_top: bool) {
+        if hwnd.is_null() {
+            return;
+        }
+        unsafe {
+            // 1. Installer le Subclassing Windows pour bloquer WM_NCCALCSIZE, WM_NCACTIVATE, WM_NCPAINT
+            SetWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101, 0);
+
+            // 2. Nettoyer le titre
+            SetWindowTextW(hwnd, to_wide_null("").as_ptr());
+
+            // 3. Styles étendus
+            let mut ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            ex_style |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+            ex_style &= !WS_EX_APPWINDOW;
+
+            if stay_on_top {
+                ex_style |= WS_EX_TOPMOST;
+            } else {
+                ex_style &= !WS_EX_TOPMOST;
+            }
+            SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style as i32);
+
+            // 4. Styles standard (WS_POPUP pur sans bordures ni barres)
+            let mut style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+            style &= !(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME);
+            style |= WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+            SetWindowLongW(hwnd, GWL_STYLE, style as i32);
+
+            // 5. Extension DWM
+            let margins = MARGINS {
+                cxLeftWidth: -1,
+                cxRightWidth: -1,
+                cyTopHeight: -1,
+                cyBottomHeight: -1,
+            };
+            DwmExtendFrameIntoClientArea(hwnd, &margins);
+
+            let ncrp: u32 = DWMNCRP_DISABLED as u32;
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_NCRENDERING_POLICY as u32,
+                &ncrp as *const _ as *const _,
+                std::mem::size_of::<u32>() as u32,
+            );
+
+            let insert_after = if stay_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
+            SetWindowPos(
+                hwnd,
+                insert_after,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+
+            // Activer la réception du Drag & Drop
+            DragAcceptFiles(hwnd, 1);
+        }
+    }
+
+    /// Récupère l'espace de travail Windows (hors barre des tâches)
+    pub fn get_work_area() -> (i32, i32, i32, i32) {
+        unsafe {
+            let mut rect = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            if SystemParametersInfoW(
+                SPI_GETWORKAREA,
+                0,
+                &mut rect as *mut _ as *mut _,
+                0,
+            ) != 0
+            {
+                let x = rect.left;
+                let y = rect.top;
+                let w = rect.right - rect.left;
+                let h = rect.bottom - rect.top;
+                (x, y, w, h)
+            } else {
+                let w = GetSystemMetrics(SM_CXSCREEN);
+                let h = GetSystemMetrics(SM_CYSCREEN);
+                (0, 0, w, h)
+            }
+        }
+    }
+
+    /// Repositionne et redimensionne strictement la fenêtre sans bloquer les fenêtres en arrière-plan
+    pub fn position_bar_window(hwnd: HWND, position: &str, bar_h: i32, bar_x: i32, bar_y: i32, bar_w: i32, is_expanded: bool) {
+        if hwnd.is_null() {
+            return;
+        }
+        let (work_x, work_y, work_w, work_h) = get_work_area();
+        let current_h = if is_expanded { (bar_h + 240).min(work_h) } else { bar_h };
+
+        let (x, y, w, h) = match position {
+            "Bottom" => {
+                let y = work_y + work_h - current_h;
+                (work_x, y, work_w, current_h)
+            }
+            "Floating" => {
+                let width = if bar_w > 0 { bar_w } else { 860.min(work_w - 40) };
+                let x = if bar_x > 0 { bar_x } else { work_x + (work_w - width) / 2 };
+                let y = if bar_y > 0 { bar_y } else { work_y + 30 };
+                (x, y, width, current_h)
+            }
+            _ => {
+                // "Top" par défaut : ancré en haut
+                (work_x, work_y, work_w, current_h)
+            }
+        };
+
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                x,
+                y,
+                w,
+                h,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+            );
+        }
+    }
+
+    /// Enregistre un raccourci global
+    pub fn register_hotkey_combo(hwnd: HWND, id: i32, modifiers: &[String], key: &str) -> bool {
+        if hwnd.is_null() || key.trim().is_empty() {
+            return false;
+        }
+        unsafe {
+            UnregisterHotKey(hwnd, id);
+
+            let mut mod_flags = MOD_NOREPEAT;
+            for m in modifiers {
+                match m.to_lowercase().as_str() {
+                    "control" | "ctrl" => mod_flags |= MOD_CONTROL,
+                    "alt" => mod_flags |= MOD_ALT,
+                    "shift" => mod_flags |= MOD_SHIFT,
+                    "win" | "windows" => mod_flags |= MOD_WIN,
+                    _ => {}
+                }
+            }
+
+            let vk = parse_virtual_key(key);
+            RegisterHotKey(hwnd, id, mod_flags, vk) != 0
+        }
+    }
+
+    pub fn unregister_hotkey_id(hwnd: HWND, id: i32) {
+        if !hwnd.is_null() {
+            unsafe {
+                UnregisterHotKey(hwnd, id);
+            }
+        }
+    }
+
+    fn parse_virtual_key(key: &str) -> u32 {
+        match key.to_uppercase().as_str() {
+            "SPACE" => VK_SPACE as u32,
+            "RETURN" | "ENTER" => VK_RETURN as u32,
+            "TAB" => VK_TAB as u32,
+            "ESCAPE" | "ESC" => VK_ESCAPE as u32,
+            "F1" => VK_F1 as u32,
+            "F2" => VK_F2 as u32,
+            "F3" => VK_F3 as u32,
+            "F4" => VK_F4 as u32,
+            "F5" => VK_F5 as u32,
+            "F6" => VK_F6 as u32,
+            "F7" => VK_F7 as u32,
+            "F8" => VK_F8 as u32,
+            "F9" => VK_F9 as u32,
+            "F10" => VK_F10 as u32,
+            "F11" => VK_F11 as u32,
+            "F12" => VK_F12 as u32,
+            s if s.len() == 1 => {
+                let c = s.chars().next().unwrap();
+                c as u32
+            }
+            _ => VK_SPACE as u32,
+        }
+    }
+
+    /// Création / Mise à jour de l'icône dans la zone de notification (Systray)
+    pub fn create_tray_icon(hwnd: HWND, tooltip: &str) -> bool {
+        unsafe {
+            let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+            nid.hWnd = hwnd;
+            nid.uID = 1;
+            nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+            nid.uCallbackMessage = WM_APP_TRAY;
+            nid.hIcon = LoadIconW(std::ptr::null_mut(), IDI_APPLICATION);
+
+            let tip_wide = to_wide_null(tooltip);
+            let copy_len = tip_wide.len().min(nid.szTip.len() - 1);
+            for i in 0..copy_len {
+                nid.szTip[i] = tip_wide[i];
+            }
+
+            Shell_NotifyIconW(NIM_ADD, &nid) != 0
+        }
+    }
+
+    pub fn remove_tray_icon(hwnd: HWND) {
+        unsafe {
+            let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+            nid.hWnd = hwnd;
+            nid.uID = 1;
+            Shell_NotifyIconW(NIM_DELETE, &nid);
+        }
+    }
+
+    /// Affiche le menu contextuel du Systray
+    pub fn show_tray_context_menu(hwnd: HWND, is_autostart: bool) {
+        unsafe {
+            let menu = CreatePopupMenu();
+            if menu.is_null() {
+                return;
+            }
+
+            let show_text = to_wide_null("👁️ Afficher / Masquer");
+            let set_text = to_wide_null("⚙️ Paramètres...");
+            let auto_text = to_wide_null(if is_autostart {
+                "✓ Lancer au démarrage de Windows"
+            } else {
+                "  Lancer au démarrage de Windows"
+            });
+            let quit_text = to_wide_null("❌ Quitter");
+
+            AppendMenuW(menu, MF_STRING, IDM_SHOW_HIDE, show_text.as_ptr());
+            AppendMenuW(menu, MF_STRING, IDM_SETTINGS, set_text.as_ptr());
+            AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+            AppendMenuW(menu, MF_STRING, IDM_AUTOSTART, auto_text.as_ptr());
+            AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+            AppendMenuW(menu, MF_STRING, IDM_QUIT, quit_text.as_ptr());
+
+            let mut pt = POINT { x: 0, y: 0 };
+            GetCursorPos(&mut pt);
+
+            SetForegroundWindow(hwnd);
+            TrackPopupMenuEx(
+                menu,
+                TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
+                pt.x,
+                pt.y,
+                hwnd,
+                std::ptr::null(),
+            );
+            DestroyMenu(menu);
+        }
+    }
+
+    /// Basculer l'option de démarrage automatique avec Windows
+    pub fn set_autostart(enabled: bool) -> Result<(), String> {
+        unsafe {
+            let key_path = to_wide_null("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+            let mut hkey: HKEY = std::ptr::null_mut();
+            let res = RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                key_path.as_ptr(),
+                0,
+                KEY_ALL_ACCESS,
+                &mut hkey,
+            );
+            if res != 0 {
+                return Err("Impossible d'ouvrir le registre Windows".to_string());
+            }
+
+            let app_name = to_wide_null("LanceurBar");
+            if enabled {
+                if let Ok(exe) = std::env::current_exe() {
+                    let exe_str = format!("\"{}\"", exe.to_string_lossy());
+                    let exe_wide = to_wide_null(&exe_str);
+                    RegSetValueExW(
+                        hkey,
+                        app_name.as_ptr(),
+                        0,
+                        REG_SZ,
+                        exe_wide.as_ptr() as *const u8,
+                        (exe_wide.len() * 2) as u32,
+                    );
+                }
+            } else {
+                RegDeleteValueW(hkey, app_name.as_ptr());
+            }
+
+            RegCloseKey(hkey);
+            Ok(())
+        }
+    }
+
+    /// Extrait l'icône d'un fichier .exe, .ico ou .lnk et l'enregistre en cache PNG
+    pub fn extract_and_cache_icon(target_path: &str, cache_dir: &Path) -> Option<PathBuf> {
+        let p = Path::new(target_path);
+        let stem = p.file_stem()?.to_string_lossy();
+        let cache_file = cache_dir.join(format!("{}.png", stem));
+
+        if cache_file.exists() {
+            return Some(cache_file);
+        }
+
+        unsafe {
+            let wide_path = to_wide_null(target_path);
+            let mut hicon: HICON = std::ptr::null_mut();
+
+            // Extraire l'icône principale du fichier
+            ExtractIconExW(
+                wide_path.as_ptr(),
+                0,
+                &mut hicon,
+                std::ptr::null_mut(),
+                1,
+            );
+
+            if hicon.is_null() {
+                return None;
+            }
+
+            // Convertir HICON en image RGBA
+            let mut icon_info: ICONINFO = std::mem::zeroed();
+            if GetIconInfo(hicon, &mut icon_info) == 0 {
+                DestroyIcon(hicon);
+                return None;
+            }
+
+            let hdc = CreateCompatibleDC(std::ptr::null_mut());
+            let mut bmp: BITMAP = std::mem::zeroed();
+            GetObjectW(
+                icon_info.hbmColor,
+                std::mem::size_of::<BITMAP>() as i32,
+                &mut bmp as *mut _ as *mut _,
+            );
+
+            let width = bmp.bmWidth;
+            let height = bmp.bmHeight;
+
+            if width <= 0 || height <= 0 {
+                if !icon_info.hbmColor.is_null() { DeleteObject(icon_info.hbmColor); }
+                if !icon_info.hbmMask.is_null() { DeleteObject(icon_info.hbmMask); }
+                DeleteDC(hdc);
+                DestroyIcon(hicon);
+                return None;
+            }
+
+            let mut bi: BITMAPINFO = std::mem::zeroed();
+            bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+            bi.bmiHeader.biWidth = width;
+            bi.bmiHeader.biHeight = -height; // Top-down
+            bi.bmiHeader.biPlanes = 1;
+            bi.bmiHeader.biBitCount = 32;
+            bi.bmiHeader.biCompression = BI_RGB;
+
+            let mut raw_pixels: Vec<u8> = vec![0; (width * height * 4) as usize];
+            GetDIBits(
+                hdc,
+                icon_info.hbmColor,
+                0,
+                height as u32,
+                raw_pixels.as_mut_ptr() as *mut _,
+                &mut bi,
+                DIB_RGB_COLORS,
+            );
+
+            // BGRX / BGRA -> RGBA
+            for chunk in raw_pixels.chunks_exact_mut(4) {
+                let b = chunk[0];
+                let r = chunk[2];
+                chunk[0] = r;
+                chunk[2] = b;
+                if chunk[3] == 0 && (chunk[0] > 0 || chunk[1] > 0 || chunk[2] > 0) {
+                    chunk[3] = 255;
+                }
+            }
+
+            if !icon_info.hbmColor.is_null() { DeleteObject(icon_info.hbmColor); }
+            if !icon_info.hbmMask.is_null() { DeleteObject(icon_info.hbmMask); }
+            DeleteDC(hdc);
+            DestroyIcon(hicon);
+
+            if let Some(img) = image::RgbaImage::from_raw(width as u32, height as u32, raw_pixels) {
+                if img.save(&cache_file).is_ok() {
+                    return Some(cache_file);
+                }
+            }
+            None
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub mod win32 {
+    use super::*;
+    pub fn setup_bar_window_styles(_hwnd: *mut std::ffi::c_void, _stay_on_top: bool) {}
+    pub fn position_bar_window(_hwnd: *mut std::ffi::c_void, _pos: &str, _h: i32, _x: i32, _y: i32, _w: i32, _exp: bool) {}
+    pub fn register_hotkey_combo(_hwnd: *mut std::ffi::c_void, _id: i32, _mods: &[String], _key: &str) -> bool { true }
+    pub fn unregister_hotkey_id(_hwnd: *mut std::ffi::c_void, _id: i32) {}
+    pub fn create_tray_icon(_hwnd: *mut std::ffi::c_void, _tip: &str) -> bool { true }
+    pub fn remove_tray_icon(_hwnd: *mut std::ffi::c_void) {}
+    pub fn show_tray_context_menu(_hwnd: *mut std::ffi::c_void, _is_auto: bool) {}
+    pub fn set_autostart(_enabled: bool) -> Result<(), String> { Ok(()) }
+    pub fn extract_and_cache_icon(_target: &str, _cache: &Path) -> Option<PathBuf> { None }
+    pub fn to_wide_null(_s: &str) -> Vec<u16> { Vec::new() }
+}
