@@ -225,14 +225,20 @@ export component SettingsWindow inherits Window {
                             for cont[idx] in root.containers_list : Rectangle {
                                 height: 48px;
                                 border-radius: 6px;
-                                background: idx == root.selected_container_index ? #3b82f633 : #0f172a88;
+                                background: idx == root.selected_container_index ? #3b82f633 : (row_touch.has_hover ? #1e293b88 : #0f172a88);
                                 border-width: 1px;
                                 border-color: idx == root.selected_container_index ? #3b82f6 : #33415544;
+                                animate background { duration: 80ms; }
+
+                                row_touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.select_container(idx); }
+                                }
 
                                 HorizontalLayout {
                                     padding-left: 8px;
                                     padding-right: 8px;
-                                    spacing: 6px;
+                                    spacing: 8px;
                                     alignment: center;
 
                                     Text {
@@ -240,56 +246,71 @@ export component SettingsWindow inherits Window {
                                         font-size: 16px;
                                         vertical-alignment: center;
                                     }
+
                                     VerticalLayout {
                                         horizontal-stretch: 1;
                                         alignment: center;
-                                        spacing: 1px;
-                                        Text {
-                                            text: cont.name;
-                                            font-size: 13px;
-                                            font-weight: 600;
-                                            color: #f8fafc;
-                                            overflow: elide;
-                                            vertical-alignment: center;
+                                        spacing: 2px;
+
+                                        // Ligne 1 : Nom du conteneur + Compteur + Espace + Boutons d'action alignés sur la ligne de texte
+                                        HorizontalLayout {
+                                            spacing: 6px;
+                                            alignment: center;
+
+                                            Text {
+                                                text: cont.name;
+                                                font-size: 13px;
+                                                font-weight: 600;
+                                                color: #f8fafc;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+
+                                            Text {
+                                                text: "(" + cont.items_count + ")";
+                                                font-size: 11px;
+                                                color: #64748b;
+                                                vertical-alignment: center;
+                                            }
+
+                                            Rectangle { horizontal-stretch: 1; }
+
+                                            // Boutons d'action alignés directement sur la ligne de texte
+                                            HorizontalLayout {
+                                                spacing: 4px;
+                                                alignment: center;
+
+                                                Rectangle {
+                                                    width: 24px; height: 22px; border-radius: 4px;
+                                                    background: c_btn_up.has_hover ? #475569 : #334155;
+                                                    animate background { duration: 80ms; }
+                                                    Text { text: "⬆"; font-size: 11px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                                    c_btn_up := TouchArea { mouse-cursor: pointer; clicked => { root.move_container_up(idx); } }
+                                                }
+                                                Rectangle {
+                                                    width: 24px; height: 22px; border-radius: 4px;
+                                                    background: c_btn_down.has_hover ? #475569 : #334155;
+                                                    animate background { duration: 80ms; }
+                                                    Text { text: "⬇"; font-size: 11px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                                    c_btn_down := TouchArea { mouse-cursor: pointer; clicked => { root.move_container_down(idx); } }
+                                                }
+                                                Rectangle {
+                                                    width: 24px; height: 22px; border-radius: 4px;
+                                                    background: c_btn_del.has_hover ? #991b1b : #7f1d1d;
+                                                    animate background { duration: 80ms; }
+                                                    Text { text: "🗑"; font-size: 11px; color: #fca5a5; horizontal-alignment: center; vertical-alignment: center; }
+                                                    c_btn_del := TouchArea { mouse-cursor: pointer; clicked => { root.delete_container(idx); } }
+                                                }
+                                            }
                                         }
+
+                                        // Ligne 2 : Raccourci dédié (si présent)
                                         if cont.hotkey_display != "" : Text {
                                             text: "⌨️ " + cont.hotkey_display;
                                             font-size: 10px;
                                             color: #60a5fa;
                                         }
                                     }
-                                    Text {
-                                        text: "(" + cont.items_count + ")";
-                                        font-size: 11px;
-                                        color: #64748b;
-                                        vertical-alignment: center;
-                                    }
-
-                                    // Boutons d'action centrés verticalement
-                                    HorizontalLayout {
-                                        spacing: 4px;
-                                        alignment: center;
-
-                                        Rectangle {
-                                            width: 24px; height: 24px; border-radius: 4px; background: #334155;
-                                            Text { text: "⬆"; font-size: 11px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.move_container_up(idx); } }
-                                        }
-                                        Rectangle {
-                                            width: 24px; height: 24px; border-radius: 4px; background: #334155;
-                                            Text { text: "⬇"; font-size: 11px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.move_container_down(idx); } }
-                                        }
-                                        Rectangle {
-                                            width: 24px; height: 24px; border-radius: 4px; background: #7f1d1d;
-                                            Text { text: "🗑"; font-size: 11px; color: #fca5a5; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.delete_container(idx); } }
-                                        }
-                                    }
-                                }
-
-                                TouchArea {
-                                    clicked => { root.select_container(idx); }
                                 }
                             }
                         }
@@ -436,14 +457,19 @@ export component SettingsWindow inherits Window {
                             for itm[idx] in root.items_list : Rectangle {
                                 height: 52px;
                                 border-radius: 6px;
-                                background: #0f172a;
+                                background: item_row_touch.has_hover ? #1e293b88 : #0f172a;
                                 border-width: 1px;
                                 border-color: #33415566;
+                                animate background { duration: 80ms; }
+
+                                item_row_touch := TouchArea {
+                                    mouse-cursor: default;
+                                }
 
                                 HorizontalLayout {
                                     padding-left: 10px;
                                     padding-right: 10px;
-                                    spacing: 8px;
+                                    spacing: 10px;
                                     alignment: center;
 
                                     Text {
@@ -455,9 +481,13 @@ export component SettingsWindow inherits Window {
                                     VerticalLayout {
                                         horizontal-stretch: 1;
                                         alignment: center;
-                                        spacing: 1px;
+                                        spacing: 2px;
+
+                                        // Ligne 1 : Nom de l'item + Badge raccourci + Espace + Boutons d'actions alignés sur le texte
                                         HorizontalLayout {
                                             spacing: 6px;
+                                            alignment: center;
+
                                             Text {
                                                 text: itm.name;
                                                 font-size: 13px;
@@ -466,6 +496,7 @@ export component SettingsWindow inherits Window {
                                                 overflow: elide;
                                                 vertical-alignment: center;
                                             }
+
                                             if itm.hotkey_display != "" : Rectangle {
                                                 background: #334155;
                                                 border-radius: 3px;
@@ -482,44 +513,58 @@ export component SettingsWindow inherits Window {
                                                     }
                                                 }
                                             }
+
+                                            Rectangle { horizontal-stretch: 1; }
+
+                                            // Boutons d'actions alignés directement sur la ligne du texte de l'item
+                                            HorizontalLayout {
+                                                spacing: 4px;
+                                                alignment: center;
+
+                                                Rectangle {
+                                                    width: 26px; height: 22px; border-radius: 4px;
+                                                    background: itm_btn_up.has_hover ? #475569 : #334155;
+                                                    animate background { duration: 80ms; }
+                                                    Text { text: "⬆"; font-size: 11px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                                    itm_btn_up := TouchArea { mouse-cursor: pointer; clicked => { root.move_item_up(idx); } }
+                                                }
+                                                Rectangle {
+                                                    width: 26px; height: 22px; border-radius: 4px;
+                                                    background: itm_btn_down.has_hover ? #475569 : #334155;
+                                                    animate background { duration: 80ms; }
+                                                    Text { text: "⬇"; font-size: 11px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                                    itm_btn_down := TouchArea { mouse-cursor: pointer; clicked => { root.move_item_down(idx); } }
+                                                }
+                                                Rectangle {
+                                                    width: 26px; height: 22px; border-radius: 4px;
+                                                    background: itm_btn_edit.has_hover ? #0369a1 : #0284c7;
+                                                    animate background { duration: 80ms; }
+                                                    Text { text: "✏"; font-size: 11px; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                                                    itm_btn_edit := TouchArea { mouse-cursor: pointer; clicked => { root.open_edit_item(idx); } }
+                                                }
+                                                Rectangle {
+                                                    width: 26px; height: 22px; border-radius: 4px;
+                                                    background: itm_btn_dup.has_hover ? #0f766e : #0d9488;
+                                                    animate background { duration: 80ms; }
+                                                    Text { text: "📋"; font-size: 11px; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                                                    itm_btn_dup := TouchArea { mouse-cursor: pointer; clicked => { root.duplicate_item(idx, root.selected_container_index); } }
+                                                }
+                                                Rectangle {
+                                                    width: 26px; height: 22px; border-radius: 4px;
+                                                    background: itm_btn_del.has_hover ? #b91c1c : #991b1b;
+                                                    animate background { duration: 80ms; }
+                                                    Text { text: "🗑"; font-size: 11px; color: #fca5a5; horizontal-alignment: center; vertical-alignment: center; }
+                                                    itm_btn_del := TouchArea { mouse-cursor: pointer; clicked => { root.delete_item(idx); } }
+                                                }
+                                            }
                                         }
+
+                                        // Ligne 2 : Chemin / Cible pleine largeur sous le titre
                                         Text {
                                             text: itm.target;
                                             font-size: 11px;
                                             color: #64748b;
                                             overflow: elide;
-                                        }
-                                    }
-
-                                    // Boutons d'actions bien centrés verticalement
-                                    HorizontalLayout {
-                                        spacing: 4px;
-                                        alignment: center;
-
-                                        Rectangle {
-                                            width: 26px; height: 26px; border-radius: 4px; background: #334155;
-                                            Text { text: "⬆"; font-size: 11px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.move_item_up(idx); } }
-                                        }
-                                        Rectangle {
-                                            width: 26px; height: 26px; border-radius: 4px; background: #334155;
-                                            Text { text: "⬇"; font-size: 11px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.move_item_down(idx); } }
-                                        }
-                                        Rectangle {
-                                            width: 28px; height: 26px; border-radius: 4px; background: #0284c7;
-                                            Text { text: "✏"; font-size: 11px; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.open_edit_item(idx); } }
-                                        }
-                                        Rectangle {
-                                            width: 28px; height: 26px; border-radius: 4px; background: #0d9488;
-                                            Text { text: "📋"; font-size: 11px; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.duplicate_item(idx, root.selected_container_index); } }
-                                        }
-                                        Rectangle {
-                                            width: 28px; height: 26px; border-radius: 4px; background: #991b1b;
-                                            Text { text: "🗑"; font-size: 11px; color: #fca5a5; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.delete_item(idx); } }
                                         }
                                     }
                                 }

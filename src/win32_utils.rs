@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports, unused_variables)]
 
 use std::path::{Path, PathBuf};
 
@@ -12,6 +12,7 @@ pub mod win32 {
     use windows_sys::Win32::Graphics::Dwm::*;
     use windows_sys::Win32::Graphics::Gdi::*;
     use windows_sys::Win32::System::Registry::*;
+    use windows_sys::Win32::System::Threading::*;
     use windows_sys::Win32::UI::Controls::*;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
     use windows_sys::Win32::UI::Shell::*;
@@ -34,7 +35,40 @@ pub mod win32 {
         OsStr::new(s).encode_wide().chain(Some(0)).collect()
     }
 
-    /// Subclass Window Procedure pour intercepter et détruire tout rendu de barre de titre ou vol de focus
+    /// Recherche fiable du HWND du bandeau avec mise en cache et énumération fallback
+    pub fn find_bar_hwnd() -> HWND {
+        let cached = BAR_HWND.load(Ordering::SeqCst) as HWND;
+        if !cached.is_null() && unsafe { IsWindow(cached) } != 0 {
+            return cached;
+        }
+
+        unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let mut process_id: u32 = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, &mut process_id); }
+            if process_id == unsafe { GetCurrentProcessId() } {
+                let mut title_buf = [0u16; 256];
+                let len = unsafe { GetWindowTextW(hwnd, title_buf.as_mut_ptr(), 256) };
+                if len > 0 {
+                    let title = String::from_utf16_lossy(&title_buf[..len as usize]);
+                    if title == "Lanceur Bandeau" {
+                        unsafe { *(lparam as *mut HWND) = hwnd; }
+                        return 0;
+                    }
+                }
+            }
+            1
+        }
+        let mut found_hwnd: HWND = std::ptr::null_mut();
+        unsafe {
+            EnumWindows(Some(enum_proc), &mut found_hwnd as *mut _ as LPARAM);
+        }
+        if !found_hwnd.is_null() {
+            BAR_HWND.store(found_hwnd as usize, Ordering::SeqCst);
+        }
+        found_hwnd
+    }
+
+    /// Subclass Window Procedure pour intercepter le vol de focus et afficher le menu contextuel
     unsafe extern "system" fn bar_wnd_proc_hook(
         hwnd: HWND,
         msg: u32,
@@ -44,62 +78,31 @@ pub mod win32 {
         _ref_data: usize,
     ) -> LRESULT {
         match msg {
-            WM_NCCALCSIZE => {
-                if wparam != 0 {
-                    // Supprime tout cadre non-client : toute la fenêtre est 100% zone cliente
-                    return 0;
-                }
-            }
-            WM_NCACTIVATE => {
-                // Empêche Windows de dessiner la barre de titre lors du changement de focus
-                return 1;
-            }
-            WM_NCPAINT => {
-                // Bloque tout dessin non-client (cadre blanc, ombre DWM non désirée)
-                return 0;
-            }
-            WM_ERASEBKGND => {
-                // Évite tout flash blanc d'effacement de fond
-                return 1;
-            }
             WM_MOUSEACTIVATE => {
-                // Empêche formellement la fenêtre de voler ou conserver le focus lors des clics souris
+                // Empêche formellement la fenêtre de voler le focus lors des clics souris
                 return MA_NOACTIVATE as isize;
             }
-            WM_ACTIVATE => {
-                // Bloque l'activation standard de la fenêtre
-                return 0;
-            }
-            WM_SETFOCUS => {
-                // Bloque la prise de focus clavier directe sur le bandeau
-                return 0;
-            }
             WM_RBUTTONUP | WM_CONTEXTMENU => {
-                let tray_hwnd = SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
-                if !tray_hwnd.is_null() {
-                    let is_auto = AUTOSTART_ENABLED.load(Ordering::SeqCst);
-                    show_tray_context_menu(tray_hwnd, is_auto);
-                    return 0;
-                }
+                let is_auto = AUTOSTART_ENABLED.load(Ordering::SeqCst);
+                show_tray_context_menu(hwnd, is_auto);
+                return 0;
             }
             _ => {}
         }
         unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
     }
 
-    /// Applique les styles ToolWindow, TopMost, NoActivate et le Subclassing pour éliminer 100% des barres blanches et vols de focus
+    /// Applique les styles ToolWindow, TopMost, NoActivate pour éliminer les barres blanches et vols de focus
     pub fn setup_bar_window_styles(hwnd: HWND, stay_on_top: bool) {
         if hwnd.is_null() {
             return;
         }
         unsafe {
-            // 1. Installer le Subclassing Windows pour bloquer WM_NCCALCSIZE, WM_NCACTIVATE, WM_NCPAINT, WM_MOUSEACTIVATE
+            // 1. Installer le Subclassing Windows (idempotent)
+            RemoveWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101);
             SetWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101, 0);
 
-            // 2. Nettoyer le titre
-            SetWindowTextW(hwnd, to_wide_null("").as_ptr());
-
-            // 3. Styles étendus
+            // 2. Styles étendus : ToolWindow + NoActivate
             let mut ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
             ex_style |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
             ex_style &= !WS_EX_APPWINDOW;
@@ -111,30 +114,13 @@ pub mod win32 {
             }
             SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style as i32);
 
-            // 4. Styles standard (WS_POPUP pur sans bordures ni barres)
+            // 3. Styles standard (WS_POPUP pur sans bordures ni barres)
             let mut style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
             style &= !(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME);
             style |= WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
             SetWindowLongW(hwnd, GWL_STYLE, style as i32);
 
-            // 5. Extension DWM
-            let margins = MARGINS {
-                cxLeftWidth: -1,
-                cxRightWidth: -1,
-                cyTopHeight: -1,
-                cyBottomHeight: -1,
-            };
-            DwmExtendFrameIntoClientArea(hwnd, &margins);
-
-            let ncrp: u32 = DWMNCRP_DISABLED as u32;
-            DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_NCRENDERING_POLICY as u32,
-                &ncrp as *const _ as *const _,
-                std::mem::size_of::<u32>() as u32,
-            );
-
-            let insert_after = if stay_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
+            let insert_after = if stay_on_top { HWND_TOPMOST } else { HWND_TOP };
             SetWindowPos(
                 hwnd,
                 insert_after,
@@ -213,7 +199,7 @@ pub mod win32 {
             }
         };
 
-        let insert_after = if stay_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
+        let insert_after = if stay_on_top { HWND_TOPMOST } else { HWND_TOP };
 
         unsafe {
             SetWindowPos(
@@ -223,8 +209,10 @@ pub mod win32 {
                 y,
                 w,
                 h,
-                SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
+            InvalidateRect(hwnd, std::ptr::null(), 1);
+            UpdateWindow(hwnd);
         }
     }
 
@@ -317,7 +305,7 @@ pub mod win32 {
         }
     }
 
-    /// Affiche le menu contextuel (Systray ou Clic Droit sur le bandeau)
+    /// Affiche le menu contextuel instantané et autonome avec TPM_RETURNCMD et fix KB135788
     pub fn show_tray_context_menu(hwnd: HWND, is_autostart: bool) {
         unsafe {
             let menu = CreatePopupMenu();
@@ -345,15 +333,23 @@ pub mod win32 {
             GetCursorPos(&mut pt);
 
             SetForegroundWindow(hwnd);
-            TrackPopupMenuEx(
+            let cmd_selected = TrackPopupMenuEx(
                 menu,
-                TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
+                TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD,
                 pt.x,
                 pt.y,
                 hwnd,
                 std::ptr::null(),
-            );
+            ) as usize;
+            PostMessageW(hwnd, WM_NULL, 0, 0);
             DestroyMenu(menu);
+
+            if cmd_selected != 0 {
+                let tray_hwnd = SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
+                if !tray_hwnd.is_null() {
+                    PostMessageW(tray_hwnd, WM_COMMAND, cmd_selected, 0);
+                }
+            }
         }
     }
 
@@ -507,4 +503,5 @@ pub mod win32 {
     pub fn set_autostart(_enabled: bool) -> Result<(), String> { Ok(()) }
     pub fn extract_and_cache_icon(_target: &str, _cache: &Path) -> Option<PathBuf> { None }
     pub fn to_wide_null(_s: &str) -> Vec<u16> { Vec::new() }
+    pub fn find_bar_hwnd() -> *mut std::ffi::c_void { std::ptr::null_mut() }
 }

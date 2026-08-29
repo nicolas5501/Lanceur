@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![allow(dead_code, unused_imports, unused_variables)]
 
 mod config;
 mod win32_utils;
@@ -14,22 +15,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 slint::include_modules!();
 
-#[cfg(windows)]
-fn trim_process_memory() {
-    unsafe extern "system" {
-        fn GetCurrentProcess() -> isize;
-        fn SetProcessWorkingSetSize(
-            h_process: isize,
-            dw_minimum_working_set_size: usize,
-            dw_maximum_working_set_size: usize,
-        ) -> i32;
-    }
-    unsafe {
-        SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
-    }
-}
-
-#[cfg(not(windows))]
+// Memory trimming disabled as SetProcessWorkingSetSize invalidates GDI buffers in Slint
 fn trim_process_memory() {}
 
 fn parse_hex_color(hex_str: &str, default: Color) -> Color {
@@ -149,6 +135,85 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
     }
 
     bar.set_containers_list(ModelRc::new(VecModel::from(containers_data)));
+}
+
+#[cfg(windows)]
+fn show_bar_and_apply_styles(bar: &BarWindow, is_expanded: bool) {
+    let _ = bar.show();
+    bar.window().request_redraw();
+    let hwnd = win32_utils::win32::find_bar_hwnd();
+    if !hwnd.is_null() {
+        win32_utils::win32::BAR_HWND.store(hwnd as usize, Ordering::SeqCst);
+        let cfg = load_config();
+        win32_utils::win32::setup_bar_window_styles(hwnd, cfg.settings.stay_on_top);
+        win32_utils::win32::position_bar_window(
+            hwnd,
+            &cfg.settings.bar_position,
+            cfg.settings.bar_height as i32,
+            cfg.settings.bar_x,
+            cfg.settings.bar_y,
+            cfg.settings.bar_width,
+            is_expanded,
+            cfg.settings.stay_on_top,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn show_bar_and_apply_styles(bar: &BarWindow, _is_expanded: bool) {
+    let _ = bar.show();
+    bar.window().request_redraw();
+}
+
+#[cfg(windows)]
+fn hide_bar_window() {
+    let hwnd = win32_utils::win32::find_bar_hwnd();
+    if !hwnd.is_null() {
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                hwnd,
+                windows_sys::Win32::UI::WindowsAndMessaging::HWND_BOTTOM,
+                -10000,
+                -10000,
+                1,
+                1,
+                windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE
+                    | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOREDRAW,
+            );
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn hide_bar_window() {}
+
+#[cfg(windows)]
+fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
+    let hwnd = win32_utils::win32::find_bar_hwnd();
+    if !hwnd.is_null() {
+        let cfg = load_config();
+        win32_utils::win32::position_bar_window(
+            hwnd,
+            &cfg.settings.bar_position,
+            cfg.settings.bar_height as i32,
+            cfg.settings.bar_x,
+            cfg.settings.bar_y,
+            cfg.settings.bar_width,
+            is_expanded,
+            cfg.settings.stay_on_top,
+        );
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
+            windows_sys::Win32::UI::WindowsAndMessaging::BringWindowToTop(hwnd);
+            windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(hwnd);
+        }
+        bar.window().request_redraw();
+    }
+}
+
+#[cfg(not(windows))]
+fn show_bar_window(bar: &BarWindow, _is_expanded: bool) {
+    bar.window().request_redraw();
 }
 
 // Helper to refresh SettingsWindow UI models
@@ -338,8 +403,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         refresh_bar_ui(&bar_window, &cfg);
     }
 
-    // Affichage initial du bandeau
-    bar_window.show()?;
+    // Récupérer la fenêtre actuellement active pour lui rendre le focus si nécessaire
+    #[cfg(windows)]
+    let prev_foreground = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+
+    // Affichage initial du bandeau sans voler le focus
+    show_bar_and_apply_styles(&bar_window, false);
 
     // Configuration Windows spécifique (Styles, Topmost, Résistance Win+D, Positionnement)
     #[cfg(windows)]
@@ -347,14 +416,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         use windows_sys::Win32::Foundation::HWND;
         use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-        let apply_bar_positioning = |is_expanded: bool| {
-            let title_wide = win32_utils::win32::to_wide_null("Lanceur Bandeau");
-            let hwnd: HWND = unsafe { FindWindowW(std::ptr::null(), title_wide.as_ptr()) };
+        let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
+        if !hwnd.is_null() {
+            let current_fg = unsafe { GetForegroundWindow() };
+            if current_fg == hwnd && !prev_foreground.is_null() && prev_foreground != hwnd {
+                unsafe { SetForegroundWindow(prev_foreground); }
+            }
+        }
 
+        slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+            let hwnd = win32_utils::win32::find_bar_hwnd();
             if !hwnd.is_null() {
-                win32_utils::win32::BAR_HWND.store(hwnd as usize, Ordering::SeqCst);
                 let cfg = load_config();
-                win32_utils::win32::setup_bar_window_styles(hwnd, cfg.settings.stay_on_top);
                 win32_utils::win32::position_bar_window(
                     hwnd,
                     &cfg.settings.bar_position,
@@ -362,18 +435,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cfg.settings.bar_x,
                     cfg.settings.bar_y,
                     cfg.settings.bar_width,
-                    is_expanded,
+                    false,
                     cfg.settings.stay_on_top,
                 );
             }
-        };
-
-        // Positionnement initial
-        apply_bar_positioning(false);
-
-        slint::Timer::single_shot(std::time::Duration::from_millis(200), move || {
-            apply_bar_positioning(false);
-            trim_process_memory();
         });
 
         // Configuration du Systray et des Hotkeys dans un thread de message Win32
@@ -476,7 +541,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     win32_utils::win32::to_wide_null("LanceurTrayMsgWindow").as_ptr(),
                     0,
                     0, 0, 0, 0,
-                    HWND_MESSAGE,
+                    std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     std::ptr::null(),
@@ -502,13 +567,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(ui) = bw.upgrade() {
                             let curr = is_vis.load(Ordering::SeqCst);
                             if curr {
-                                let _ = ui.hide();
+                                hide_bar_window();
                                 is_vis.store(false, Ordering::SeqCst);
                             } else {
-                                let _ = ui.show();
+                                show_bar_window(&ui, false);
                                 is_vis.store(true, Ordering::SeqCst);
                             }
-                            trim_process_memory();
                         }
                     });
                 });
@@ -534,10 +598,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if let Some(ui) = bw.upgrade() {
                                     let curr = is_vis.load(Ordering::SeqCst);
                                     if curr {
-                                        let _ = ui.hide();
+                                        hide_bar_window();
                                         is_vis.store(false, Ordering::SeqCst);
                                     } else {
-                                        let _ = ui.show();
+                                        show_bar_window(&ui, false);
                                         is_vis.store(true, Ordering::SeqCst);
                                     }
                                 }
@@ -562,10 +626,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let title_wide = win32_utils::win32::to_wide_null("⚙️ Configuration du Lanceur");
                                             let hwnd: HWND = FindWindowW(std::ptr::null(), title_wide.as_ptr());
                                             if !hwnd.is_null() {
-                                                ShowWindow(hwnd, SW_RESTORE);
-                                                SetForegroundWindow(hwnd);
-                                                BringWindowToTop(hwnd);
-                                                windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(hwnd);
+                                                let mut pid: u32 = 0;
+                                                GetWindowThreadProcessId(hwnd, &mut pid);
+                                                if pid == windows_sys::Win32::System::Threading::GetCurrentProcessId() {
+                                                    ShowWindow(hwnd, SW_RESTORE);
+                                                    SetForegroundWindow(hwnd);
+                                                    BringWindowToTop(hwnd);
+                                                    windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(hwnd);
+                                                }
                                             }
                                         };
                                         bring_to_front();
@@ -604,10 +672,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(ui) = bw.upgrade() {
                                 let curr = is_vis.load(Ordering::SeqCst);
                                 if curr {
-                                    let _ = ui.hide();
+                                    hide_bar_window();
                                     is_vis.store(false, Ordering::SeqCst);
                                 } else {
-                                    let _ = ui.show();
+                                    show_bar_window(&ui, false);
                                     is_vis.store(true, Ordering::SeqCst);
                                 }
                             }
@@ -619,7 +687,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let is_vis = is_vis_for_hk.clone();
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = bw.upgrade() {
-                                let _ = ui.show();
+                                show_bar_window(&ui, true);
                                 is_vis.store(true, Ordering::SeqCst);
                                 ui.set_active_dropdown_idx(cont_idx);
                             }
@@ -725,22 +793,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // Menu contextuel au clic droit sur le bandeau
-    {
-        let app_cfg_clone = app_config.clone();
-        bar_window.on_show_context_menu(move || {
-            #[cfg(windows)]
-            {
-                use windows_sys::Win32::Foundation::HWND;
-                let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
-                if !tray_hwnd.is_null() {
-                    let is_auto = app_cfg_clone.lock().unwrap().settings.autostart;
-                    win32_utils::win32::show_tray_context_menu(tray_hwnd, is_auto);
-                }
-            }
-        });
-    }
-
     // Redimensionnement de conteneur à la souris
     {
         let app_cfg_clone = app_config.clone();
@@ -768,6 +820,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let cfg = cfg_arc.lock().unwrap();
                 refresh_settings_ui(&sui, &cfg, sel_idx.load(Ordering::SeqCst));
                 let _ = sui.show();
+            }
+        });
+    }
+
+    {
+        let app_cfg_clone = app_config.clone();
+        bar_window.on_open_context_menu(move || {
+            #[cfg(windows)]
+            {
+                use windows_sys::Win32::Foundation::HWND;
+                let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
+                let is_auto = app_cfg_clone.lock().unwrap().settings.autostart;
+                win32_utils::win32::show_tray_context_menu(hwnd, is_auto);
             }
         });
     }
@@ -1302,11 +1367,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // Réduction initiale de la mémoire après initialisation
-    slint::Timer::single_shot(std::time::Duration::from_millis(400), move || {
-        trim_process_memory();
-    });
-
-    slint::run_event_loop()?;
+    slint::run_event_loop_until_quit()?;
     Ok(())
 }

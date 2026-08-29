@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, unused_variables)]
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -49,7 +51,7 @@ impl Default for AppSettings {
             hotkey_modifiers: vec!["Control".to_string()],
             hotkey_key: "Space".to_string(),
             autostart: false,
-            stay_on_top: true,
+            stay_on_top: false,
             bar_x: 0,
             bar_y: 0,
             bar_width: 0,
