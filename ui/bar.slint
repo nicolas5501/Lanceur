@@ -95,13 +95,13 @@ component DropdownItemRow inherits Rectangle {
 
 export component BarWindow inherits Window {
     title: "Lanceur Bandeau";
-    background: root.bar_bg_color;
+    background: #00000000;
     default-font-family: "Segoe UI, system-ui, sans-serif";
     no-frame: true;
 
     in property <string> bar_position: "Top";
     in property <string> containers_align: "Left"; // "Left", "Center", "Right"
-    in property <color> bar_bg_color: #0f172af8;
+    in property <color> bar_bg_color: #0f172a;
     in property <color> bar_text_color: #f8fafc;
     in property <length> bar_h: 36px;
     in property <length> item_h: 26px;

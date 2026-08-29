@@ -66,7 +66,7 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
     bar.set_container_font_sz(cfg.settings.container_font_size);
     bar.set_item_font_sz(cfg.settings.item_font_size);
 
-    let bar_bg = parse_hex_color(&cfg.settings.bar_bg_color, Color::from_argb_u8(248, 15, 23, 42));
+    let bar_bg = parse_hex_color(&cfg.settings.bar_bg_color, Color::from_argb_u8(255, 15, 23, 42));
     let bar_text = parse_hex_color(&cfg.settings.bar_text_color, Color::from_argb_u8(255, 248, 250, 252));
     bar.set_bar_bg_color(bar_bg);
     bar.set_bar_text_color(bar_text);
