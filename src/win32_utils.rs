@@ -103,40 +103,49 @@ pub mod win32 {
                 return MA_NOACTIVATE as isize;
             }
             WM_SYSCOMMAND => {
-                // Empêche Windows de minimiser le bandeau lors d'un Win+D SEULEMENT si stay_on_top est actif
+                // Empêche Windows de minimiser le bandeau lors d'un Win+D
                 let cmd = (wparam & 0xFFF0) as u32;
                 if cmd == SC_MINIMIZE {
-                    let stay = STAY_ON_TOP_ENABLED.load(Ordering::SeqCst);
-                    if stay {
+                    let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
+                    if !is_explicit {
                         return 0; // Bloquer la minimisation demandée par le Shell
                     }
                 }
             }
             WM_WINDOWPOSCHANGING => {
-                // Intercepte les tentatives du Shell de masquer le bandeau lors d'un Win+D si stay_on_top est actif
-                let stay = STAY_ON_TOP_ENABLED.load(Ordering::SeqCst);
+                // Intercepte les tentatives du Shell de masquer le bandeau lors d'un Win+D
                 let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
-                if stay && !is_explicit && lparam != 0 {
+                if !is_explicit && lparam != 0 {
                     let pos_ptr = lparam as *mut WINDOWPOS;
                     if !pos_ptr.is_null() {
                         let pos = unsafe { &mut *pos_ptr };
                         if (pos.flags & SWP_HIDEWINDOW) != 0 {
                             pos.flags &= !SWP_HIDEWINDOW;
+                            pos.flags |= SWP_SHOWWINDOW;
+                        }
+                    }
+                }
+            }
+            WM_WINDOWPOSCHANGED => {
+                let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
+                if !is_explicit {
+                    unsafe {
+                        if IsIconic(hwnd) != 0 {
+                            ShowWindow(hwnd, SW_RESTORE);
                         }
                     }
                 }
             }
             WM_SIZE => {
-                let stay = STAY_ON_TOP_ENABLED.load(Ordering::SeqCst);
                 let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
-                if stay && !is_explicit && wparam == SIZE_MINIMIZED as usize {
+                if !is_explicit && wparam == SIZE_MINIMIZED as usize {
+                    unsafe { ShowWindow(hwnd, SW_RESTORE); }
                     return 0;
                 }
             }
             WM_SHOWWINDOW => {
-                let stay = STAY_ON_TOP_ENABLED.load(Ordering::SeqCst);
                 let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
-                if stay && !is_explicit && wparam == 0 {
+                if !is_explicit && wparam == 0 {
                     return 0;
                 }
             }
@@ -145,7 +154,22 @@ pub mod win32 {
         unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
     }
 
-    /// Applique les styles ToolWindow, NoActivate et configure le mode TopMost selon le paramétrage
+    /// Rattache la fenêtre à Progman (Bureau Windows, architecture Stardock Fences / Desktop Widgets).
+    /// Permet à la fenêtre de résister à Win + D (car elle fait partie intégrante du Bureau)
+    /// tout en cédant 100% du focus et du premier plan aux autres applications actives.
+    pub fn attach_to_desktop(hwnd: HWND) {
+        if hwnd.is_null() {
+            return;
+        }
+        unsafe {
+            let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
+            if !progman.is_null() {
+                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
+            }
+        }
+    }
+
+    /// Applique les styles ToolWindow, NoActivate et configure le mode Bureau (Fences pattern)
     pub fn setup_bar_window_styles(hwnd: HWND, stay_on_top: bool) {
         if hwnd.is_null() {
             return;
@@ -156,28 +180,25 @@ pub mod win32 {
             RemoveWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101);
             SetWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101, 0);
 
-            // 2. Styles étendus : ToolWindow + NoActivate
+            // 2. Rattachement au Bureau (Progman - Fences technique)
+            attach_to_desktop(hwnd);
+
+            // 3. Styles étendus : ToolWindow + NoActivate
             let mut ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
             ex_style |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
             ex_style &= !WS_EX_APPWINDOW;
-
-            if stay_on_top {
-                ex_style |= WS_EX_TOPMOST;
-            } else {
-                ex_style &= !WS_EX_TOPMOST;
-            }
+            ex_style &= !WS_EX_TOPMOST; // Z-order normal pour laisser le focus et le premier plan aux autres applications
             SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style as i32);
 
-            // 3. Styles standard (WS_POPUP pur sans bordures ni barres)
+            // 4. Styles standard (WS_POPUP pur sans bordures ni barres)
             let mut style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
             style &= !(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME);
             style |= WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
             SetWindowLongW(hwnd, GWL_STYLE, style as i32);
 
-            let insert_after = if stay_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
             SetWindowPos(
                 hwnd,
-                insert_after,
+                HWND_NOTOPMOST,
                 0,
                 0,
                 0,
@@ -185,7 +206,7 @@ pub mod win32 {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             );
 
-            // 4. Définir un pinceau de classe sombre pour que Windows ne peigne JAMAIS de fond blanc
+            // 5. Définir un pinceau de classe sombre pour que Windows ne peigne JAMAIS de fond blanc
             use windows_sys::Win32::Graphics::Gdi::*;
             let dark_brush = CreateSolidBrush(0x002a170f); // RGB(15, 23, 42) = #0f172a
             SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, dark_brush as isize);
@@ -195,38 +216,77 @@ pub mod win32 {
         }
     }
 
-    /// Amène la fenêtre au premier plan visuel sans voler le focus clavier (Unmasking).
-    /// Si stay_on_top est true, la fenêtre reste HWND_TOPMOST.
-    /// Si stay_on_top est false, l'astuce flash-to-top remonte la fenêtre sans la rendre topmost.
-    pub fn bring_to_foreground(hwnd: HWND, stay_on_top: bool) {
+    /// Amène la fenêtre au premier plan visuel sans voler le focus ni forcer le mode TopMost
+    pub fn bring_to_foreground(hwnd: HWND, _stay_on_top: bool) {
         if hwnd.is_null() {
             return;
         }
         unsafe {
-            if stay_on_top {
-                // Mode topmost : simple confirmation de la position au premier plan
-                SetWindowPos(
-                    hwnd,
-                    HWND_TOPMOST,
-                    0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-                );
+            SetWindowPos(
+                hwnd,
+                HWND_NOTOPMOST,
+                0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE,
+            );
+        }
+    }
+
+    /// Enregistre la barre auprès de Windows (AppBar) pour réserver l'espace à l'écran
+    pub fn register_appbar(hwnd: HWND, position: &str, bar_h: i32) {
+        if hwnd.is_null() || position == "Floating" {
+            return;
+        }
+        unsafe {
+            use windows_sys::Win32::UI::Shell::*;
+            let mut abd = APPBARDATA {
+                cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+                hWnd: hwnd,
+                uCallbackMessage: WM_APP + 3,
+                uEdge: if position == "Bottom" { ABE_BOTTOM } else { ABE_TOP },
+                rc: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+                lParam: 0,
+            };
+
+            SHAppBarMessage(ABM_NEW, &mut abd);
+
+            let (screen_w, screen_h) = (
+                GetSystemMetrics(SM_CXSCREEN),
+                GetSystemMetrics(SM_CYSCREEN),
+            );
+
+            if position == "Bottom" {
+                abd.rc.left = 0;
+                abd.rc.right = screen_w;
+                abd.rc.top = screen_h - bar_h;
+                abd.rc.bottom = screen_h;
             } else {
-                // Astuce "flash-to-top" : passer brièvement en topmost puis revenir
-                // → remonte la fenêtre au sommet des fenêtres normales
-                SetWindowPos(
-                    hwnd,
-                    HWND_TOPMOST,
-                    0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-                );
-                SetWindowPos(
-                    hwnd,
-                    HWND_NOTOPMOST,
-                    0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-                );
+                abd.rc.left = 0;
+                abd.rc.right = screen_w;
+                abd.rc.top = 0;
+                abd.rc.bottom = bar_h;
             }
+
+            SHAppBarMessage(ABM_QUERYPOS, &mut abd);
+            SHAppBarMessage(ABM_SETPOS, &mut abd);
+        }
+    }
+
+    /// Retire l'enregistrement AppBar auprès de Windows
+    pub fn unregister_appbar(hwnd: HWND) {
+        if hwnd.is_null() {
+            return;
+        }
+        unsafe {
+            use windows_sys::Win32::UI::Shell::*;
+            let mut abd = APPBARDATA {
+                cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+                hWnd: hwnd,
+                uCallbackMessage: 0,
+                uEdge: 0,
+                rc: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+                lParam: 0,
+            };
+            SHAppBarMessage(ABM_REMOVE, &mut abd);
         }
     }
 
@@ -360,12 +420,10 @@ pub mod win32 {
             }
         };
 
-        let insert_after = if stay_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
-
         unsafe {
             SetWindowPos(
                 hwnd,
-                insert_after,
+                HWND_NOTOPMOST,
                 x,
                 y,
                 w,

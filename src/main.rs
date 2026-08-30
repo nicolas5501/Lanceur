@@ -144,6 +144,7 @@ fn hide_bar_window() {
     win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(true, Ordering::SeqCst);
     let hwnd = win32_utils::win32::find_bar_hwnd();
     if !hwnd.is_null() {
+        win32_utils::win32::unregister_appbar(hwnd);
         unsafe {
             // Déplace hors-écran sans détruire la surface graphique de Slint/Winit
             windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
@@ -170,6 +171,12 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
     if !hwnd.is_null() {
         let cfg = load_config();
 
+        if cfg.settings.stay_on_top {
+            win32_utils::win32::register_appbar(hwnd, &cfg.settings.bar_position, cfg.settings.bar_height as i32);
+        } else {
+            win32_utils::win32::unregister_appbar(hwnd);
+        }
+
         // Applique les styles et synchronise le mode stay_on_top
         win32_utils::win32::setup_bar_window_styles(hwnd, cfg.settings.stay_on_top);
 
@@ -186,7 +193,6 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
         );
 
         win32_utils::win32::bring_to_foreground(hwnd, cfg.settings.stay_on_top);
-        win32_utils::win32::focus_bar_window(hwnd);
 
         // Force le rafraîchissement immédiat de Slint pour repeindre instantanément
         bar.window().request_redraw();
@@ -407,6 +413,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(false, Ordering::SeqCst);
 
                 let cfg = cfg_init.lock().unwrap();
+                if cfg.settings.stay_on_top {
+                    win32_utils::win32::register_appbar(hwnd, &cfg.settings.bar_position, cfg.settings.bar_height as i32);
+                }
                 win32_utils::win32::setup_bar_window_styles(hwnd, cfg.settings.stay_on_top);
 
                 // Positionner au top pleine largeur et afficher sans voler le focus
@@ -1354,6 +1363,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
                     if !hwnd.is_null() {
+                        if cfg.settings.stay_on_top {
+                            win32_utils::win32::register_appbar(hwnd, &cfg.settings.bar_position, cfg.settings.bar_height as i32);
+                        } else {
+                            win32_utils::win32::unregister_appbar(hwnd);
+                        }
                         win32_utils::win32::setup_bar_window_styles(hwnd, cfg.settings.stay_on_top);
                         win32_utils::win32::position_bar_window(
                             hwnd,
