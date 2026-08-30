@@ -79,6 +79,16 @@ pub mod win32 {
         _ref_data: usize,
     ) -> LRESULT {
         match msg {
+            WM_NCCALCSIZE => {
+                // Supprime totalement le cadre non-client (barre de titre et bordures DWM)
+                if wparam != 0 {
+                    return 0;
+                }
+            }
+            WM_NCACTIVATE => {
+                // Empêche Windows de dessiner la barre de titre standard "Lanceur Bandeau"
+                return 1;
+            }
             WM_ERASEBKGND => {
                 // Empêche formellement Windows de repeindre le fond en blanc par défaut
                 return 1;
