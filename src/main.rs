@@ -183,6 +183,7 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
         );
 
         win32_utils::win32::bring_to_foreground(hwnd, cfg.settings.stay_on_top);
+        win32_utils::win32::focus_bar_window(hwnd);
 
         // Force le rafraîchissement immédiat de Slint pour repeindre instantanément
         bar.window().request_redraw();

@@ -201,23 +201,51 @@ pub mod win32 {
                     hwnd,
                     HWND_TOPMOST,
                     0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
                 );
             } else {
                 // Astuce "flash-to-top" : passer brièvement en topmost puis revenir
-                // → remonte la fenêtre au sommet des fenêtres normales sans voler le focus
+                // → remonte la fenêtre au sommet des fenêtres normales
                 SetWindowPos(
                     hwnd,
                     HWND_TOPMOST,
                     0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
                 );
                 SetWindowPos(
                     hwnd,
                     HWND_NOTOPMOST,
                     0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
                 );
+            }
+        }
+    }
+
+    /// Donne explicitement le focus actif au bandeau lors du démasquage
+    pub fn focus_bar_window(hwnd: HWND) {
+        if hwnd.is_null() {
+            return;
+        }
+        unsafe {
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+            
+            let cur_fg = GetForegroundWindow();
+            let cur_thread = GetWindowThreadProcessId(cur_fg, std::ptr::null_mut());
+            let our_thread = windows_sys::Win32::System::Threading::GetCurrentThreadId();
+
+            if cur_thread != 0 && cur_thread != our_thread {
+                AttachThreadInput(our_thread, cur_thread, 1);
+                SetForegroundWindow(hwnd);
+                BringWindowToTop(hwnd);
+                SetActiveWindow(hwnd);
+                SetFocus(hwnd);
+                AttachThreadInput(our_thread, cur_thread, 0);
+            } else {
+                SetForegroundWindow(hwnd);
+                BringWindowToTop(hwnd);
+                SetActiveWindow(hwnd);
+                SetFocus(hwnd);
             }
         }
     }
