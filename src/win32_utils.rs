@@ -288,16 +288,18 @@ pub mod win32 {
                 GetSystemMetrics(SM_CYSCREEN),
             );
 
+            let safe_bar_h = bar_h.min(screen_h);
+
             if position == "Bottom" {
                 abd.rc.left = 0;
                 abd.rc.right = screen_w;
-                abd.rc.top = screen_h - bar_h;
+                abd.rc.top = screen_h - safe_bar_h;
                 abd.rc.bottom = screen_h;
             } else {
                 abd.rc.left = 0;
                 abd.rc.right = screen_w;
                 abd.rc.top = 0;
-                abd.rc.bottom = bar_h;
+                abd.rc.bottom = safe_bar_h;
             }
 
             SHAppBarMessage(ABM_QUERYPOS, &mut abd);
@@ -339,15 +341,16 @@ pub mod win32 {
             return;
         }
         let (work_x, work_y, work_w, work_h) = get_work_area();
+        let safe_h = bar_h.min(work_h);
         let (x, y, w, h) = match position {
-            "Bottom" => (work_x, work_y + work_h - bar_h, work_w, bar_h),
+            "Bottom" => (work_x, work_y + work_h - safe_h, work_w, safe_h),
             "Floating" => {
                 let width = if bar_w > 0 { bar_w } else { 860.min(work_w - 40) };
                 let x = if bar_x > 0 { bar_x } else { work_x + (work_w - width) / 2 };
                 let y = if bar_y > 0 { bar_y } else { work_y + 30 };
-                (x, y, width, bar_h)
+                (x, y, width, safe_h)
             }
-            _ => (work_x, work_y, work_w, bar_h), // "Top" par défaut
+            _ => (work_x, work_y, work_w, safe_h), // "Top" par défaut
         };
         unsafe {
             // SWP_NOACTIVATE + ni SWP_SHOWWINDOW ni SWP_HIDEWINDOW → taille sans affichage
@@ -407,7 +410,7 @@ pub mod win32 {
             return;
         }
         let (work_x, work_y, work_w, work_h) = get_work_area();
-        let current_h = if is_expanded { (bar_h + 240).min(work_h) } else { bar_h };
+        let current_h = if is_expanded { (bar_h + 240).min(work_h) } else { bar_h.min(work_h) };
 
         let (x, y, w, h) = match position {
             "Bottom" => {

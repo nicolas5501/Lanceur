@@ -52,6 +52,7 @@ export component SettingsWindow inherits Window {
     in-out property <bool> edit_cont_mod_shift: false;
     in-out property <bool> edit_cont_mod_win: false;
     in-out property <string> edit_cont_hotkey_key: "";
+    in property <[string]> available_rows: [];
 
     // Données Items du conteneur sélectionné
     in property <[ItemDetailData]> items_list: [];
@@ -386,13 +387,9 @@ export component SettingsWindow inherits Window {
                                 spacing: 6px;
                                 Text { text: "Ligne :"; font-size: 11px; color: #94a3b8; vertical-alignment: center; width: 85px; }
                                 ComboBox {
-                                    model: ["Ligne 1 (Haut)", "Ligne 2", "Ligne 3", "Ligne 4"];
-                                    current-value: root.edit_container_row == 0 ? "Ligne 1 (Haut)" : (root.edit_container_row == 1 ? "Ligne 2" : (root.edit_container_row == 2 ? "Ligne 3" : "Ligne 4"));
-                                    selected(val) => {
-                                        if val == "Ligne 1 (Haut)" { root.edit_container_row = 0; }
-                                        if val == "Ligne 2" { root.edit_container_row = 1; }
-                                        if val == "Ligne 3" { root.edit_container_row = 2; }
-                                        if val == "Ligne 4" { root.edit_container_row = 3; }
+                                    model: root.available_rows;
+                                    current-index <=> root.edit_container_row;
+                                    selected => {
                                         root.save_container_info();
                                     }
                                 }

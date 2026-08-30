@@ -63,6 +63,57 @@ fn get_total_bar_height(cfg: &AppConfig) -> i32 {
     (cfg.settings.bar_height as i32) * (rows_count as i32)
 }
 
+fn get_max_allowed_rows(cfg: &AppConfig) -> usize {
+    #[cfg(windows)]
+    let (_, _, _, work_h) = win32_utils::win32::get_work_area();
+    #[cfg(not(windows))]
+    let work_h = 1080;
+
+    let bar_h = (cfg.settings.bar_height as i32).max(16);
+    let max_by_screen = ((work_h / bar_h) as usize).max(1);
+    let max_in_cfg = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0) + 1;
+    max_by_screen.max(max_in_cfg).max(1)
+}
+
+fn build_available_rows_list(cfg: &AppConfig) -> Vec<SharedString> {
+    let max_rows = get_max_allowed_rows(cfg);
+    let mut rows = Vec::with_capacity(max_rows);
+    for r in 0..max_rows {
+        if r == 0 {
+            rows.push("Ligne 1 (Haut)".into());
+        } else {
+            rows.push(format!("Ligne {}", r + 1).into());
+        }
+    }
+    rows
+}
+
+fn update_bar_window_geometry(cfg: &AppConfig) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::HWND;
+        let bar_hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
+        if !bar_hwnd.is_null() {
+            let total_h = get_total_bar_height(cfg);
+            if cfg.settings.stay_on_top {
+                win32_utils::win32::register_appbar(bar_hwnd, &cfg.settings.bar_position, total_h);
+            } else {
+                win32_utils::win32::unregister_appbar(bar_hwnd);
+            }
+            win32_utils::win32::position_bar_window(
+                bar_hwnd,
+                &cfg.settings.bar_position,
+                total_h,
+                cfg.settings.bar_x,
+                cfg.settings.bar_y,
+                cfg.settings.bar_width,
+                false,
+                cfg.settings.stay_on_top,
+            );
+        }
+    }
+}
+
 // Helper to convert AppConfig to BarWindow UI models
 fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
     bar.set_bar_position(cfg.settings.bar_position.clone().into());
@@ -236,6 +287,9 @@ fn show_bar_window(bar: &BarWindow, _is_expanded: bool) {
 
 // Helper to refresh SettingsWindow UI models
 fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_cont_idx: usize) {
+    let available_rows = build_available_rows_list(cfg);
+    settings_win.set_available_rows(ModelRc::new(VecModel::from(available_rows)));
+
     let mut cont_summaries: Vec<ContainerItemSummary> = Vec::new();
     let mut cont_names: Vec<SharedString> = Vec::new();
 
@@ -951,6 +1005,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(bui) = bar_weak.upgrade() {
                     refresh_bar_ui(&bui, &cfg);
                 }
+                update_bar_window_geometry(&cfg);
             }
         });
     }
@@ -974,6 +1029,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(bui) = bar_weak.upgrade() {
                         refresh_bar_ui(&bui, &cfg);
                     }
+                    update_bar_window_geometry(&cfg);
                 }
             }
         });
@@ -1003,6 +1059,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(bui) = b_weak.upgrade() {
                     refresh_bar_ui(&bui, &cfg);
                 }
+                update_bar_window_geometry(&cfg);
             }
         });
 
@@ -1023,6 +1080,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(bui) = b_weak2.upgrade() {
                     refresh_bar_ui(&bui, &cfg);
                 }
+                update_bar_window_geometry(&cfg);
             }
         });
     }
@@ -1056,28 +1114,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cont.hotkey_key = sui.get_edit_cont_hotkey_key().to_string();
 
                     save_config(&cfg);
+                    update_bar_window_geometry(&cfg);
 
                     #[cfg(windows)]
                     {
                         use windows_sys::Win32::Foundation::HWND;
-                        let bar_hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
-                        if !bar_hwnd.is_null() {
-                            let total_h = get_total_bar_height(&cfg);
-                            if cfg.settings.stay_on_top {
-                                win32_utils::win32::register_appbar(bar_hwnd, &cfg.settings.bar_position, total_h);
-                            }
-                            win32_utils::win32::position_bar_window(
-                                bar_hwnd,
-                                &cfg.settings.bar_position,
-                                total_h,
-                                cfg.settings.bar_x,
-                                cfg.settings.bar_y,
-                                cfg.settings.bar_width,
-                                false,
-                                cfg.settings.stay_on_top,
-                            );
-                        }
-
                         let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
                         if !tray_hwnd.is_null() {
                             register_all_hotkeys_for_app(tray_hwnd, &cfg);
