@@ -22,6 +22,7 @@ pub mod win32 {
     pub static BAR_HWND: AtomicUsize = AtomicUsize::new(0);
     pub static APP_RUNNING: AtomicBool = AtomicBool::new(true);
     pub static AUTOSTART_ENABLED: AtomicBool = AtomicBool::new(false);
+    pub static BAR_EXPLICITLY_HIDDEN: AtomicBool = AtomicBool::new(false);
 
     pub const WM_APP_TRAY: u32 = WM_APP + 1;
     pub const WM_APP_HOTKEY: u32 = WM_APP + 2;
@@ -68,7 +69,7 @@ pub mod win32 {
         found_hwnd
     }
 
-    /// Subclass Window Procedure pour intercepter le vol de focus et afficher le menu contextuel
+    /// Subclass Window Procedure pour intercepter le vol de focus et résister à Win+D
     unsafe extern "system" fn bar_wnd_proc_hook(
         hwnd: HWND,
         msg: u32,
@@ -78,21 +79,56 @@ pub mod win32 {
         _ref_data: usize,
     ) -> LRESULT {
         match msg {
+            WM_ERASEBKGND => {
+                // Empêche formellement Windows de repeindre le fond en blanc par défaut
+                return 1;
+            }
+            WM_NCPAINT => {
+                // Empêche Windows de dessiner une bordure ou barre de titre standard non-client
+                return 0;
+            }
             WM_MOUSEACTIVATE => {
-                // Empêche formellement la fenêtre de voler le focus lors des clics souris
+                // Empêche formellement la fenêtre de voler le focus lors des clics souris ordinaires
                 return MA_NOACTIVATE as isize;
             }
-            WM_RBUTTONUP | WM_CONTEXTMENU => {
-                let is_auto = AUTOSTART_ENABLED.load(Ordering::SeqCst);
-                show_tray_context_menu(hwnd, is_auto);
-                return 0;
+            WM_SYSCOMMAND => {
+                // Empêche Windows de minimiser le bandeau lors d'un Win+D / Show Desktop
+                let cmd = (wparam & 0xFFF0) as u32;
+                if cmd == SC_MINIMIZE {
+                    return 0; // Bloquer la minimisation demandée par le Shell
+                }
+            }
+            WM_WINDOWPOSCHANGING => {
+                // Intercepte les tentatives du Shell de masquer le bandeau lors d'un Win+D
+                let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
+                if !is_explicit && lparam != 0 {
+                    let pos_ptr = lparam as *mut WINDOWPOS;
+                    if !pos_ptr.is_null() {
+                        let pos = unsafe { &mut *pos_ptr };
+                        if (pos.flags & SWP_HIDEWINDOW) != 0 {
+                            pos.flags &= !SWP_HIDEWINDOW;
+                        }
+                    }
+                }
+            }
+            WM_SIZE => {
+                let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
+                if !is_explicit && wparam == SIZE_MINIMIZED as usize {
+                    return 0;
+                }
+            }
+            WM_SHOWWINDOW => {
+                let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
+                if !is_explicit && wparam == 0 {
+                    return 0;
+                }
             }
             _ => {}
         }
         unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
     }
 
-    /// Applique les styles ToolWindow, TopMost, NoActivate pour éliminer les barres blanches et vols de focus
+    /// Applique les styles ToolWindow, NoActivate et configure le mode TopMost selon le paramétrage
     pub fn setup_bar_window_styles(hwnd: HWND, stay_on_top: bool) {
         if hwnd.is_null() {
             return;
@@ -117,10 +153,10 @@ pub mod win32 {
             // 3. Styles standard (WS_POPUP pur sans bordures ni barres)
             let mut style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
             style &= !(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME);
-            style |= WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+            style |= WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
             SetWindowLongW(hwnd, GWL_STYLE, style as i32);
 
-            let insert_after = if stay_on_top { HWND_TOPMOST } else { HWND_TOP };
+            let insert_after = if stay_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
             SetWindowPos(
                 hwnd,
                 insert_after,
@@ -133,6 +169,80 @@ pub mod win32 {
 
             // Activer la réception du Drag & Drop
             DragAcceptFiles(hwnd, 1);
+        }
+    }
+
+    /// Amène la fenêtre au premier plan visuel sans voler le focus clavier (Unmasking).
+    /// Si stay_on_top est true, la fenêtre reste HWND_TOPMOST.
+    /// Si stay_on_top est false, l'astuce flash-to-top remonte la fenêtre sans la rendre topmost.
+    pub fn bring_to_foreground(hwnd: HWND, stay_on_top: bool) {
+        if hwnd.is_null() {
+            return;
+        }
+        unsafe {
+            if stay_on_top {
+                // Mode topmost : simple confirmation de la position au premier plan
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE,
+                );
+            } else {
+                // Astuce "flash-to-top" : passer brièvement en topmost puis revenir
+                // → remonte la fenêtre au sommet des fenêtres normales sans voler le focus
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE,
+                );
+                SetWindowPos(
+                    hwnd,
+                    HWND_NOTOPMOST,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE,
+                );
+            }
+        }
+    }
+
+    /// Dimensionne la fenêtre à sa taille finale (pleine largeur) SANS la rendre visible.
+    /// Utilisé lors de l'initialisation pour que la zone de clic droit soit correcte
+    /// dès le premier affichage, même avant que l'utilisateur n'ait masqué/réaffiché la barre.
+    pub fn size_bar_window_hidden(
+        hwnd: HWND,
+        position: &str,
+        bar_h: i32,
+        bar_x: i32,
+        bar_y: i32,
+        bar_w: i32,
+    ) {
+        if hwnd.is_null() {
+            return;
+        }
+        let (work_x, work_y, work_w, work_h) = get_work_area();
+        let (x, y, w, h) = match position {
+            "Bottom" => (work_x, work_y + work_h - bar_h, work_w, bar_h),
+            "Floating" => {
+                let width = if bar_w > 0 { bar_w } else { 860.min(work_w - 40) };
+                let x = if bar_x > 0 { bar_x } else { work_x + (work_w - width) / 2 };
+                let y = if bar_y > 0 { bar_y } else { work_y + 30 };
+                (x, y, width, bar_h)
+            }
+            _ => (work_x, work_y, work_w, bar_h), // "Top" par défaut
+        };
+        unsafe {
+            // SWP_NOACTIVATE + ni SWP_SHOWWINDOW ni SWP_HIDEWINDOW → taille sans affichage
+            SetWindowPos(
+                hwnd,
+                HWND_NOTOPMOST,
+                x,
+                y,
+                w,
+                h,
+                SWP_NOACTIVATE,
+            );
         }
     }
 
@@ -199,7 +309,7 @@ pub mod win32 {
             }
         };
 
-        let insert_after = if stay_on_top { HWND_TOPMOST } else { HWND_TOP };
+        let insert_after = if stay_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
 
         unsafe {
             SetWindowPos(
@@ -305,7 +415,8 @@ pub mod win32 {
         }
     }
 
-    /// Affiche le menu contextuel instantané et autonome avec TPM_RETURNCMD et fix KB135788
+    /// Affiche le menu contextuel instantané et autonome avec TPM_RETURNCMD et fix KB135788.
+    /// Sauvegarde et restaure la fenêtre au premier plan pour éviter le vol de focus permanent.
     pub fn show_tray_context_menu(hwnd: HWND, is_autostart: bool) {
         unsafe {
             let menu = CreatePopupMenu();
@@ -332,7 +443,11 @@ pub mod win32 {
             let mut pt = POINT { x: 0, y: 0 };
             GetCursorPos(&mut pt);
 
+            // Sauvegarde la fenêtre active AVANT de prendre temporairement le focus
+            // (obligatoire pour que TrackPopupMenuEx fonctionne, mais on restaure ensuite)
+            let prev_foreground = GetForegroundWindow();
             SetForegroundWindow(hwnd);
+
             let cmd_selected = TrackPopupMenuEx(
                 menu,
                 TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD,
@@ -341,8 +456,14 @@ pub mod win32 {
                 hwnd,
                 std::ptr::null(),
             ) as usize;
+
             PostMessageW(hwnd, WM_NULL, 0, 0);
             DestroyMenu(menu);
+
+            // Restaure immédiatement le focus à la fenêtre précédente
+            if !prev_foreground.is_null() && prev_foreground != hwnd {
+                SetForegroundWindow(prev_foreground);
+            }
 
             if cmd_selected != 0 {
                 let tray_hwnd = SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
@@ -493,8 +614,10 @@ pub mod win32 {
 #[cfg(not(windows))]
 pub mod win32 {
     use super::*;
+    pub static BAR_EXPLICITLY_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     pub fn setup_bar_window_styles(_hwnd: *mut std::ffi::c_void, _stay_on_top: bool) {}
     pub fn position_bar_window(_hwnd: *mut std::ffi::c_void, _pos: &str, _h: i32, _x: i32, _y: i32, _w: i32, _exp: bool, _stay: bool) {}
+    pub fn bring_to_foreground(_hwnd: *mut std::ffi::c_void) {}
     pub fn register_hotkey_combo(_hwnd: *mut std::ffi::c_void, _id: i32, _mods: &[String], _key: &str) -> bool { true }
     pub fn unregister_hotkey_id(_hwnd: *mut std::ffi::c_void, _id: i32) {}
     pub fn create_tray_icon(_hwnd: *mut std::ffi::c_void, _tip: &str) -> bool { true }

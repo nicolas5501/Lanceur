@@ -120,6 +120,7 @@ export component BarWindow inherits Window {
         alignment: root.bar_position == "Bottom" ? end : start;
 
         main_bar := Rectangle {
+            width: 100%;
             height: root.bar_h;
             background: root.bar_bg_color;
             border-bottom-left-radius: root.bar_position == "Top" ? 6px : 0px;

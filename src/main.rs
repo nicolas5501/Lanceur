@@ -137,48 +137,24 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
     bar.set_containers_list(ModelRc::new(VecModel::from(containers_data)));
 }
 
-#[cfg(windows)]
-fn show_bar_and_apply_styles(bar: &BarWindow, is_expanded: bool) {
-    let _ = bar.show();
-    bar.window().request_redraw();
-    let hwnd = win32_utils::win32::find_bar_hwnd();
-    if !hwnd.is_null() {
-        win32_utils::win32::BAR_HWND.store(hwnd as usize, Ordering::SeqCst);
-        let cfg = load_config();
-        win32_utils::win32::setup_bar_window_styles(hwnd, cfg.settings.stay_on_top);
-        win32_utils::win32::position_bar_window(
-            hwnd,
-            &cfg.settings.bar_position,
-            cfg.settings.bar_height as i32,
-            cfg.settings.bar_x,
-            cfg.settings.bar_y,
-            cfg.settings.bar_width,
-            is_expanded,
-            cfg.settings.stay_on_top,
-        );
-    }
-}
 
-#[cfg(not(windows))]
-fn show_bar_and_apply_styles(bar: &BarWindow, _is_expanded: bool) {
-    let _ = bar.show();
-    bar.window().request_redraw();
-}
 
 #[cfg(windows)]
 fn hide_bar_window() {
+    win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(true, Ordering::SeqCst);
     let hwnd = win32_utils::win32::find_bar_hwnd();
     if !hwnd.is_null() {
         unsafe {
+            // Déplace hors-écran sans détruire la surface graphique de Slint/Winit
             windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
                 hwnd,
                 windows_sys::Win32::UI::WindowsAndMessaging::HWND_BOTTOM,
-                -10000,
-                -10000,
-                1,
-                1,
-                windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE
-                    | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOREDRAW,
+                -30000,
+                -30000,
+                0,
+                0,
+                windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOSIZE
+                    | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE,
             );
         }
     }
@@ -189,9 +165,12 @@ fn hide_bar_window() {}
 
 #[cfg(windows)]
 fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
+    win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(false, Ordering::SeqCst);
     let hwnd = win32_utils::win32::find_bar_hwnd();
     if !hwnd.is_null() {
         let cfg = load_config();
+
+        // Repositionne à l'écran (Top/Bottom/Floating) sans voler le focus
         win32_utils::win32::position_bar_window(
             hwnd,
             &cfg.settings.bar_position,
@@ -202,11 +181,8 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
             is_expanded,
             cfg.settings.stay_on_top,
         );
-        unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
-            windows_sys::Win32::UI::WindowsAndMessaging::BringWindowToTop(hwnd);
-            windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(hwnd);
-        }
+
+        win32_utils::win32::bring_to_foreground(hwnd, cfg.settings.stay_on_top);
         bar.window().request_redraw();
     }
 }
@@ -392,6 +368,7 @@ fn register_all_hotkeys_for_app(hwnd: windows_sys::Win32::Foundation::HWND, cfg:
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_config = Arc::new(Mutex::new(load_config()));
     let selected_container_idx = Arc::new(AtomicUsize::new(0));
+    // Démarrage initial visible
     let is_bar_visible = Arc::new(AtomicBool::new(true));
 
     let bar_window = BarWindow::new()?;
@@ -403,31 +380,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         refresh_bar_ui(&bar_window, &cfg);
     }
 
-    // Récupérer la fenêtre actuellement active pour lui rendre le focus si nécessaire
-    #[cfg(windows)]
-    let prev_foreground = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+    let _ = bar_window.show();
 
-    // Affichage initial du bandeau sans voler le focus
-    show_bar_and_apply_styles(&bar_window, false);
-
-    // Configuration Windows spécifique (Styles, Topmost, Résistance Win+D, Positionnement)
+    // Timer d'initialisation Win32 : se déclenche sur le premier tick de l'event loop,
+    // moment où le HWND natif est garanti d'exister.
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+        let cfg_init = app_config.clone();
+        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+            use std::sync::atomic::Ordering;
 
-        let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
-        if !hwnd.is_null() {
-            let current_fg = unsafe { GetForegroundWindow() };
-            if current_fg == hwnd && !prev_foreground.is_null() && prev_foreground != hwnd {
-                unsafe { SetForegroundWindow(prev_foreground); }
-            }
-        }
+            let apply = |hwnd: windows_sys::Win32::Foundation::HWND| {
+                win32_utils::win32::BAR_HWND.store(hwnd as usize, Ordering::SeqCst);
+                win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(false, Ordering::SeqCst);
 
-        slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
-            let hwnd = win32_utils::win32::find_bar_hwnd();
-            if !hwnd.is_null() {
-                let cfg = load_config();
+                let cfg = cfg_init.lock().unwrap();
+                win32_utils::win32::setup_bar_window_styles(hwnd, cfg.settings.stay_on_top);
+
+                // Positionner au top pleine largeur et afficher sans voler le focus
                 win32_utils::win32::position_bar_window(
                     hwnd,
                     &cfg.settings.bar_position,
@@ -438,9 +408,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     false,
                     cfg.settings.stay_on_top,
                 );
-            }
-        });
 
+                win32_utils::win32::bring_to_foreground(hwnd, cfg.settings.stay_on_top);
+            };
+
+            let hwnd = win32_utils::win32::find_bar_hwnd();
+            if hwnd.is_null() {
+                // HWND pas encore créé (rare) → relancer dans 50ms
+                let cfg_retry = cfg_init.clone();
+                slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+                    use std::sync::atomic::Ordering;
+                    let hwnd2 = win32_utils::win32::find_bar_hwnd();
+                    if hwnd2.is_null() { return; }
+                    win32_utils::win32::BAR_HWND.store(hwnd2 as usize, Ordering::SeqCst);
+                    win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(false, Ordering::SeqCst);
+                    let cfg = cfg_retry.lock().unwrap();
+                    win32_utils::win32::setup_bar_window_styles(hwnd2, cfg.settings.stay_on_top);
+                    win32_utils::win32::position_bar_window(
+                        hwnd2,
+                        &cfg.settings.bar_position,
+                        cfg.settings.bar_height as i32,
+                        cfg.settings.bar_x,
+                        cfg.settings.bar_y,
+                        cfg.settings.bar_width,
+                        false,
+                        cfg.settings.stay_on_top,
+                    );
+                    win32_utils::win32::bring_to_foreground(hwnd2, cfg.settings.stay_on_top);
+                });
+                return;
+            }
+
+            apply(hwnd);
+        });
+    }
+
+    #[cfg(windows)]
+    {
         // Configuration du Systray et des Hotkeys dans un thread de message Win32
         let app_cfg_clone = app_config.clone();
         let bar_weak = bar_window.as_weak();
@@ -825,14 +829,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     {
-        let app_cfg_clone = app_config.clone();
         bar_window.on_open_context_menu(move || {
             #[cfg(windows)]
             {
-                use windows_sys::Win32::Foundation::HWND;
-                let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
-                let is_auto = app_cfg_clone.lock().unwrap().settings.autostart;
-                win32_utils::win32::show_tray_context_menu(hwnd, is_auto);
+                use windows_sys::Win32::Foundation::*;
+                use windows_sys::Win32::UI::WindowsAndMessaging::*;
+                let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
+                if !tray_hwnd.is_null() {
+                    // Délégation asynchrone non-bloquante au thread systray pour afficher le menu
+                    unsafe {
+                        PostMessageW(
+                            tray_hwnd,
+                            win32_utils::win32::WM_APP_TRAY,
+                            0,
+                            WM_RBUTTONUP as LPARAM,
+                        );
+                    }
+                }
             }
         });
     }
@@ -1367,6 +1380,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    slint::run_event_loop_until_quit()?;
+    // run_event_loop() (et non run_event_loop_until_quit()) :
+    // l'event loop ne quitte QUE sur un appel explicite à slint::quit_event_loop().
+    // Cela permet d'utiliser SW_HIDE librement sans risquer de terminer l'appli.
+    slint::run_event_loop()?;
     Ok(())
 }
