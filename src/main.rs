@@ -170,6 +170,9 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
     if !hwnd.is_null() {
         let cfg = load_config();
 
+        // Applique les styles et synchronise le mode stay_on_top
+        win32_utils::win32::setup_bar_window_styles(hwnd, cfg.settings.stay_on_top);
+
         // Repositionne à l'écran (Top/Bottom/Floating) sans voler le focus
         win32_utils::win32::position_bar_window(
             hwnd,
@@ -1362,6 +1365,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             false,
                             cfg.settings.stay_on_top,
                         );
+                        win32_utils::win32::bring_to_foreground(hwnd, cfg.settings.stay_on_top);
                     }
 
                     let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;

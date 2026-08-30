@@ -22,6 +22,7 @@ pub mod win32 {
     pub static BAR_HWND: AtomicUsize = AtomicUsize::new(0);
     pub static APP_RUNNING: AtomicBool = AtomicBool::new(true);
     pub static AUTOSTART_ENABLED: AtomicBool = AtomicBool::new(false);
+    pub static STAY_ON_TOP_ENABLED: AtomicBool = AtomicBool::new(false);
     pub static BAR_EXPLICITLY_HIDDEN: AtomicBool = AtomicBool::new(false);
 
     pub const WM_APP_TRAY: u32 = WM_APP + 1;
@@ -102,16 +103,20 @@ pub mod win32 {
                 return MA_NOACTIVATE as isize;
             }
             WM_SYSCOMMAND => {
-                // Empêche Windows de minimiser le bandeau lors d'un Win+D / Show Desktop
+                // Empêche Windows de minimiser le bandeau lors d'un Win+D SEULEMENT si stay_on_top est actif
                 let cmd = (wparam & 0xFFF0) as u32;
                 if cmd == SC_MINIMIZE {
-                    return 0; // Bloquer la minimisation demandée par le Shell
+                    let stay = STAY_ON_TOP_ENABLED.load(Ordering::SeqCst);
+                    if stay {
+                        return 0; // Bloquer la minimisation demandée par le Shell
+                    }
                 }
             }
             WM_WINDOWPOSCHANGING => {
-                // Intercepte les tentatives du Shell de masquer le bandeau lors d'un Win+D
+                // Intercepte les tentatives du Shell de masquer le bandeau lors d'un Win+D si stay_on_top est actif
+                let stay = STAY_ON_TOP_ENABLED.load(Ordering::SeqCst);
                 let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
-                if !is_explicit && lparam != 0 {
+                if stay && !is_explicit && lparam != 0 {
                     let pos_ptr = lparam as *mut WINDOWPOS;
                     if !pos_ptr.is_null() {
                         let pos = unsafe { &mut *pos_ptr };
@@ -122,14 +127,16 @@ pub mod win32 {
                 }
             }
             WM_SIZE => {
+                let stay = STAY_ON_TOP_ENABLED.load(Ordering::SeqCst);
                 let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
-                if !is_explicit && wparam == SIZE_MINIMIZED as usize {
+                if stay && !is_explicit && wparam == SIZE_MINIMIZED as usize {
                     return 0;
                 }
             }
             WM_SHOWWINDOW => {
+                let stay = STAY_ON_TOP_ENABLED.load(Ordering::SeqCst);
                 let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
-                if !is_explicit && wparam == 0 {
+                if stay && !is_explicit && wparam == 0 {
                     return 0;
                 }
             }
@@ -143,6 +150,7 @@ pub mod win32 {
         if hwnd.is_null() {
             return;
         }
+        STAY_ON_TOP_ENABLED.store(stay_on_top, Ordering::SeqCst);
         unsafe {
             // 1. Installer le Subclassing Windows (idempotent)
             RemoveWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101);
