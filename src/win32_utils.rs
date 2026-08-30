@@ -167,6 +167,11 @@ pub mod win32 {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             );
 
+            // 4. Définir un pinceau de classe sombre pour que Windows ne peigne JAMAIS de fond blanc
+            use windows_sys::Win32::Graphics::Gdi::*;
+            let dark_brush = CreateSolidBrush(0x002a170f); // RGB(15, 23, 42) = #0f172a
+            SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, dark_brush as isize);
+
             // Activer la réception du Drag & Drop
             DragAcceptFiles(hwnd, 1);
         }

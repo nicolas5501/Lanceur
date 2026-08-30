@@ -183,7 +183,15 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
         );
 
         win32_utils::win32::bring_to_foreground(hwnd, cfg.settings.stay_on_top);
+
+        // Force le rafraîchissement immédiat de Slint pour repeindre instantanément
         bar.window().request_redraw();
+        let bw = bar.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(16), move || {
+            if let Some(b) = bw.upgrade() {
+                b.window().request_redraw();
+            }
+        });
     }
 }
 
@@ -465,13 +473,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match msg {
                     win32_utils::win32::WM_APP_TRAY => {
                         let event = lparam as u32;
-                        if event == WM_LBUTTONUP {
+                        if event == WM_LBUTTONUP || event == 0x0402 /* NIN_SELECT */ || event == 0x0400 /* NIN_KEYSELECT */ {
                             TRAY_HANDLER.with(|th| {
                                 if let Some(handler) = th.borrow().as_ref() {
                                     (handler.toggle_bar)();
                                 }
                             });
-                        } else if event == WM_RBUTTONUP {
+                        } else if event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
                             TRAY_HANDLER.with(|th| {
                                 if let Some(handler) = th.borrow().as_ref() {
                                     (handler.show_menu)(hwnd);
