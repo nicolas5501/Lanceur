@@ -157,19 +157,7 @@ pub mod win32 {
     /// Rattache la fenêtre à Progman (Bureau Windows, architecture Stardock Fences / Desktop Widgets).
     /// Permet à la fenêtre de résister à Win + D (car elle fait partie intégrante du Bureau)
     /// tout en cédant 100% du focus et du premier plan aux autres applications actives.
-    pub fn attach_to_desktop(hwnd: HWND) {
-        if hwnd.is_null() {
-            return;
-        }
-        unsafe {
-            let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
-            if !progman.is_null() {
-                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
-            }
-        }
-    }
-
-    /// Applique les styles ToolWindow, NoActivate et configure le mode Bureau (Fences pattern)
+    /// Applique les styles ToolWindow, NoActivate et configure le mode stay_on_top
     pub fn setup_bar_window_styles(hwnd: HWND, stay_on_top: bool) {
         if hwnd.is_null() {
             return;
@@ -180,25 +168,27 @@ pub mod win32 {
             RemoveWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101);
             SetWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101, 0);
 
-            // 2. Rattachement au Bureau (Progman - Fences technique)
-            attach_to_desktop(hwnd);
-
-            // 3. Styles étendus : ToolWindow + NoActivate
+            // 2. Styles étendus : ToolWindow + NoActivate
             let mut ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
             ex_style |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
             ex_style &= !WS_EX_APPWINDOW;
-            ex_style &= !WS_EX_TOPMOST; // Z-order normal pour laisser le focus et le premier plan aux autres applications
+            if stay_on_top {
+                ex_style |= WS_EX_TOPMOST;
+            } else {
+                ex_style &= !WS_EX_TOPMOST;
+            }
             SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style as i32);
 
-            // 4. Styles standard (WS_POPUP pur sans bordures ni barres)
+            // 3. Styles standard (WS_POPUP pur sans bordures ni barres)
             let mut style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
             style &= !(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME);
             style |= WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
             SetWindowLongW(hwnd, GWL_STYLE, style as i32);
 
+            let insert_after = if stay_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
             SetWindowPos(
                 hwnd,
-                HWND_NOTOPMOST,
+                insert_after,
                 0,
                 0,
                 0,
@@ -206,7 +196,7 @@ pub mod win32 {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             );
 
-            // 5. Définir un pinceau de classe sombre pour que Windows ne peigne JAMAIS de fond blanc
+            // 4. Définir un pinceau de classe sombre pour que Windows ne peigne JAMAIS de fond blanc
             use windows_sys::Win32::Graphics::Gdi::*;
             let dark_brush = CreateSolidBrush(0x002a170f); // RGB(15, 23, 42) = #0f172a
             SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, dark_brush as isize);
@@ -216,18 +206,62 @@ pub mod win32 {
         }
     }
 
-    /// Amène la fenêtre au premier plan visuel sans voler le focus ni forcer le mode TopMost
-    pub fn bring_to_foreground(hwnd: HWND, _stay_on_top: bool) {
+    /// Amène la fenêtre au premier plan absolu au-dessus de toutes les fenêtres ouvertes
+    pub fn bring_to_foreground(hwnd: HWND, stay_on_top: bool) {
         if hwnd.is_null() {
             return;
         }
         unsafe {
-            SetWindowPos(
-                hwnd,
-                HWND_NOTOPMOST,
-                0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE,
-            );
+            if stay_on_top {
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                );
+            } else {
+                // Flash to topmost to ensure it rises above any maximized or foreground window, then settle
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                );
+                SetWindowPos(
+                    hwnd,
+                    HWND_NOTOPMOST,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                );
+            }
+        }
+    }
+
+    /// Donne le focus actif au bandeau lors du démasquage
+    pub fn focus_bar_window(hwnd: HWND) {
+        if hwnd.is_null() {
+            return;
+        }
+        unsafe {
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+            
+            let cur_fg = GetForegroundWindow();
+            let cur_thread = GetWindowThreadProcessId(cur_fg, std::ptr::null_mut());
+            let our_thread = windows_sys::Win32::System::Threading::GetCurrentThreadId();
+
+            if cur_thread != 0 && cur_thread != our_thread {
+                AttachThreadInput(our_thread, cur_thread, 1);
+                SetForegroundWindow(hwnd);
+                BringWindowToTop(hwnd);
+                SetActiveWindow(hwnd);
+                SetFocus(hwnd);
+                AttachThreadInput(our_thread, cur_thread, 0);
+            } else {
+                SetForegroundWindow(hwnd);
+                BringWindowToTop(hwnd);
+                SetActiveWindow(hwnd);
+                SetFocus(hwnd);
+            }
         }
     }
 
@@ -287,34 +321,6 @@ pub mod win32 {
                 lParam: 0,
             };
             SHAppBarMessage(ABM_REMOVE, &mut abd);
-        }
-    }
-
-    /// Donne explicitement le focus actif au bandeau lors du démasquage
-    pub fn focus_bar_window(hwnd: HWND) {
-        if hwnd.is_null() {
-            return;
-        }
-        unsafe {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
-            
-            let cur_fg = GetForegroundWindow();
-            let cur_thread = GetWindowThreadProcessId(cur_fg, std::ptr::null_mut());
-            let our_thread = windows_sys::Win32::System::Threading::GetCurrentThreadId();
-
-            if cur_thread != 0 && cur_thread != our_thread {
-                AttachThreadInput(our_thread, cur_thread, 1);
-                SetForegroundWindow(hwnd);
-                BringWindowToTop(hwnd);
-                SetActiveWindow(hwnd);
-                SetFocus(hwnd);
-                AttachThreadInput(our_thread, cur_thread, 0);
-            } else {
-                SetForegroundWindow(hwnd);
-                BringWindowToTop(hwnd);
-                SetActiveWindow(hwnd);
-                SetFocus(hwnd);
-            }
         }
     }
 

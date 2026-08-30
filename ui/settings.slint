@@ -10,6 +10,7 @@ export struct ContainerItemSummary {
     text_color: string,
     items_count: int,
     hotkey_display: string,
+    cont_row: int,
 }
 
 export struct ItemDetailData {
@@ -45,6 +46,7 @@ export component SettingsWindow inherits Window {
     in-out property <string> edit_container_display_mode: "Both";
     in-out property <string> edit_container_bg: "";
     in-out property <string> edit_container_text: "";
+    in-out property <int> edit_container_row: 0;
     in-out property <bool> edit_cont_mod_ctrl: false;
     in-out property <bool> edit_cont_mod_alt: false;
     in-out property <bool> edit_cont_mod_shift: false;
@@ -273,6 +275,25 @@ export component SettingsWindow inherits Window {
                                                 vertical-alignment: center;
                                             }
 
+                                            Rectangle {
+                                                background: #0284c733;
+                                                border-radius: 3px;
+                                                border-width: 1px;
+                                                border-color: #38bdf888;
+                                                height: 16px;
+                                                HorizontalLayout {
+                                                    padding-left: 4px;
+                                                    padding-right: 4px;
+                                                    Text {
+                                                        text: "L" + (cont.cont_row + 1);
+                                                        font-size: 9px;
+                                                        font-weight: 700;
+                                                        color: #38bdf8;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+
                                             Rectangle { horizontal-stretch: 1; }
 
                                             // Boutons d'action alignés directement sur la ligne de texte
@@ -355,6 +376,23 @@ export component SettingsWindow inherits Window {
                                         if val == "Icône + Nom" { root.edit_container_display_mode = "Both"; }
                                         if val == "Icône seulement" { root.edit_container_display_mode = "IconOnly"; }
                                         if val == "Nom seulement" { root.edit_container_display_mode = "NameOnly"; }
+                                        root.save_container_info();
+                                    }
+                                }
+                            }
+
+                            // Ligne du bandeau
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text { text: "Ligne :"; font-size: 11px; color: #94a3b8; vertical-alignment: center; width: 85px; }
+                                ComboBox {
+                                    model: ["Ligne 1 (Haut)", "Ligne 2", "Ligne 3", "Ligne 4"];
+                                    current-value: root.edit_container_row == 0 ? "Ligne 1 (Haut)" : (root.edit_container_row == 1 ? "Ligne 2" : (root.edit_container_row == 2 ? "Ligne 3" : "Ligne 4"));
+                                    selected(val) => {
+                                        if val == "Ligne 1 (Haut)" { root.edit_container_row = 0; }
+                                        if val == "Ligne 2" { root.edit_container_row = 1; }
+                                        if val == "Ligne 3" { root.edit_container_row = 2; }
+                                        if val == "Ligne 4" { root.edit_container_row = 3; }
                                         root.save_container_info();
                                     }
                                 }

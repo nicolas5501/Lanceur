@@ -57,6 +57,12 @@ fn format_hotkey_display(mods: &[String], key: &str) -> String {
     parts.join("+")
 }
 
+fn get_total_bar_height(cfg: &AppConfig) -> i32 {
+    let max_row = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0);
+    let rows_count = (max_row + 1).max(1);
+    (cfg.settings.bar_height as i32) * (rows_count as i32)
+}
+
 // Helper to convert AppConfig to BarWindow UI models
 fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
     bar.set_bar_position(cfg.settings.bar_position.clone().into());
@@ -72,69 +78,85 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
     bar.set_bar_text_color(bar_text);
 
     let cache = cache_dir();
-    let mut containers_data: Vec<BarContainerData> = Vec::new();
+    let max_row = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0);
+    let rows_count = (max_row + 1).max(1);
+    bar.set_rows_count(rows_count as i32);
 
-    for cont in &cfg.containers {
-        let mut items_data: Vec<BarItemData> = Vec::new();
-        for itm in &cont.items {
-            let mut icon_img = slint::Image::default();
-            let mut icon_type = itm.icon_type.clone();
+    let mut rows_data: Vec<BarRowData> = Vec::new();
 
-            if icon_type == "extracted" {
-                let icon_path = win32_utils::win32::extract_and_cache_icon(&itm.target, &cache);
-                if let Some(p) = icon_path {
-                    if let Ok(img) = slint::Image::load_from_path(&p) {
-                        icon_img = img;
-                    } else {
-                        icon_type = "emoji".to_string();
+    for r in 0..rows_count {
+        let mut row_containers: Vec<BarContainerData> = Vec::new();
+
+        for (flat_idx, cont) in cfg.containers.iter().enumerate() {
+            if cont.row == r {
+                let mut items_data: Vec<BarItemData> = Vec::new();
+                for itm in &cont.items {
+                    let mut icon_img = slint::Image::default();
+                    let mut icon_type = itm.icon_type.clone();
+
+                    if icon_type == "extracted" {
+                        let icon_path = win32_utils::win32::extract_and_cache_icon(&itm.target, &cache);
+                        if let Some(p) = icon_path {
+                            if let Ok(img) = slint::Image::load_from_path(&p) {
+                                icon_img = img;
+                            } else {
+                                icon_type = "emoji".to_string();
+                            }
+                        } else {
+                            icon_type = "emoji".to_string();
+                        }
                     }
-                } else {
-                    icon_type = "emoji".to_string();
+
+                    let emoji_val = if itm.icon_value.is_empty() {
+                        "🚀".to_string()
+                    } else {
+                        itm.icon_value.clone()
+                    };
+
+                    let item_hk_str = format_hotkey_display(&itm.hotkey_modifiers, &itm.hotkey_key);
+                    let itm_bg = parse_hex_color(&itm.bg_color, Color::from_argb_u8(0, 0, 0, 0));
+                    let itm_text = parse_hex_color(&itm.text_color, Color::from_argb_u8(0, 0, 0, 0));
+
+                    items_data.push(BarItemData {
+                        id: itm.id.clone().into(),
+                        name: itm.name.clone().into(),
+                        target: itm.target.clone().into(),
+                        icon_type: icon_type.into(),
+                        icon_emoji: emoji_val.into(),
+                        icon_image: icon_img,
+                        container_id: cont.id.clone().into(),
+                        hotkey_display: item_hk_str.into(),
+                        bg_color: itm_bg,
+                        text_color: itm_text,
+                    });
                 }
+
+                let cont_hk_str = format_hotkey_display(&cont.hotkey_modifiers, &cont.hotkey_key);
+                let cont_bg = parse_hex_color(&cont.bg_color, Color::from_argb_u8(0, 0, 0, 0));
+                let cont_text = parse_hex_color(&cont.text_color, Color::from_argb_u8(0, 0, 0, 0));
+
+                row_containers.push(BarContainerData {
+                    flat_idx: flat_idx as i32,
+                    id: cont.id.clone().into(),
+                    name: cont.name.clone().into(),
+                    icon: cont.icon.clone().into(),
+                    width_val: cont.width,
+                    display_mode: cont.display_mode.clone().into(),
+                    bg_color: cont_bg,
+                    text_color: cont_text,
+                    items: ModelRc::new(VecModel::from(items_data)),
+                    hotkey_display: cont_hk_str.into(),
+                });
             }
-
-            let emoji_val = if itm.icon_value.is_empty() {
-                "🚀".to_string()
-            } else {
-                itm.icon_value.clone()
-            };
-
-            let item_hk_str = format_hotkey_display(&itm.hotkey_modifiers, &itm.hotkey_key);
-            let itm_bg = parse_hex_color(&itm.bg_color, Color::from_argb_u8(0, 0, 0, 0));
-            let itm_text = parse_hex_color(&itm.text_color, Color::from_argb_u8(0, 0, 0, 0));
-
-            items_data.push(BarItemData {
-                id: itm.id.clone().into(),
-                name: itm.name.clone().into(),
-                target: itm.target.clone().into(),
-                icon_type: icon_type.into(),
-                icon_emoji: emoji_val.into(),
-                icon_image: icon_img,
-                container_id: cont.id.clone().into(),
-                hotkey_display: item_hk_str.into(),
-                bg_color: itm_bg,
-                text_color: itm_text,
-            });
         }
 
-        let cont_hk_str = format_hotkey_display(&cont.hotkey_modifiers, &cont.hotkey_key);
-        let cont_bg = parse_hex_color(&cont.bg_color, Color::from_argb_u8(0, 0, 0, 0));
-        let cont_text = parse_hex_color(&cont.text_color, Color::from_argb_u8(0, 0, 0, 0));
-
-        containers_data.push(BarContainerData {
-            id: cont.id.clone().into(),
-            name: cont.name.clone().into(),
-            icon: cont.icon.clone().into(),
-            width_val: cont.width,
-            display_mode: cont.display_mode.clone().into(),
-            bg_color: cont_bg,
-            text_color: cont_text,
-            items: ModelRc::new(VecModel::from(items_data)),
-            hotkey_display: cont_hk_str.into(),
+        rows_data.push(BarRowData {
+            row_idx: r as i32,
+            containers: ModelRc::new(VecModel::from(row_containers)),
         });
     }
 
-    bar.set_containers_list(ModelRc::new(VecModel::from(containers_data)));
+    bar.set_rows_list(ModelRc::new(VecModel::from(rows_data)));
 }
 
 
@@ -170,9 +192,10 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
     let hwnd = win32_utils::win32::find_bar_hwnd();
     if !hwnd.is_null() {
         let cfg = load_config();
+        let total_h = get_total_bar_height(&cfg);
 
         if cfg.settings.stay_on_top {
-            win32_utils::win32::register_appbar(hwnd, &cfg.settings.bar_position, cfg.settings.bar_height as i32);
+            win32_utils::win32::register_appbar(hwnd, &cfg.settings.bar_position, total_h);
         } else {
             win32_utils::win32::unregister_appbar(hwnd);
         }
@@ -184,7 +207,7 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
         win32_utils::win32::position_bar_window(
             hwnd,
             &cfg.settings.bar_position,
-            cfg.settings.bar_height as i32,
+            total_h,
             cfg.settings.bar_x,
             cfg.settings.bar_y,
             cfg.settings.bar_width,
@@ -193,6 +216,7 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
         );
 
         win32_utils::win32::bring_to_foreground(hwnd, cfg.settings.stay_on_top);
+        win32_utils::win32::focus_bar_window(hwnd);
 
         // Force le rafraîchissement immédiat de Slint pour repeindre instantanément
         bar.window().request_redraw();
@@ -228,6 +252,7 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
             text_color: cont.text_color.clone().into(),
             items_count: cont.items.len() as i32,
             hotkey_display: hk.into(),
+            cont_row: cont.row as i32,
         });
     }
 
@@ -248,6 +273,7 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
         settings_win.set_edit_container_display_mode(cont.display_mode.clone().into());
         settings_win.set_edit_container_bg(cont.bg_color.clone().into());
         settings_win.set_edit_container_text(cont.text_color.clone().into());
+        settings_win.set_edit_container_row(cont.row as i32);
         settings_win.set_edit_cont_mod_ctrl(cont.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("control") || m.eq_ignore_ascii_case("ctrl")));
         settings_win.set_edit_cont_mod_alt(cont.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("alt")));
         settings_win.set_edit_cont_mod_shift(cont.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("shift")));
@@ -327,6 +353,7 @@ fn add_dropped_file_to_config(file_path: &str, config_arc: &Arc<Mutex<AppConfig>
             text_color: "".to_string(),
             hotkey_modifiers: Vec::new(),
             hotkey_key: String::new(),
+            row: 0,
             items: vec![new_item],
         });
     } else {
@@ -413,8 +440,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(false, Ordering::SeqCst);
 
                 let cfg = cfg_init.lock().unwrap();
+                let total_h = get_total_bar_height(&cfg);
                 if cfg.settings.stay_on_top {
-                    win32_utils::win32::register_appbar(hwnd, &cfg.settings.bar_position, cfg.settings.bar_height as i32);
+                    win32_utils::win32::register_appbar(hwnd, &cfg.settings.bar_position, total_h);
                 }
                 win32_utils::win32::setup_bar_window_styles(hwnd, cfg.settings.stay_on_top);
 
@@ -422,7 +450,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 win32_utils::win32::position_bar_window(
                     hwnd,
                     &cfg.settings.bar_position,
-                    cfg.settings.bar_height as i32,
+                    total_h,
                     cfg.settings.bar_x,
                     cfg.settings.bar_y,
                     cfg.settings.bar_width,
@@ -444,11 +472,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     win32_utils::win32::BAR_HWND.store(hwnd2 as usize, Ordering::SeqCst);
                     win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(false, Ordering::SeqCst);
                     let cfg = cfg_retry.lock().unwrap();
+                    let total_h = get_total_bar_height(&cfg);
+                    if cfg.settings.stay_on_top {
+                        win32_utils::win32::register_appbar(hwnd2, &cfg.settings.bar_position, total_h);
+                    }
                     win32_utils::win32::setup_bar_window_styles(hwnd2, cfg.settings.stay_on_top);
                     win32_utils::win32::position_bar_window(
                         hwnd2,
                         &cfg.settings.bar_position,
-                        cfg.settings.bar_height as i32,
+                        total_h,
                         cfg.settings.bar_x,
                         cfg.settings.bar_y,
                         cfg.settings.bar_width,
@@ -803,10 +835,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
                 if !hwnd.is_null() {
                     let cfg = app_cfg_clone.lock().unwrap();
+                    let total_h = get_total_bar_height(&cfg);
                     win32_utils::win32::position_bar_window(
                         hwnd,
                         &cfg.settings.bar_position,
-                        cfg.settings.bar_height as i32,
+                        total_h,
                         cfg.settings.bar_x,
                         cfg.settings.bar_y,
                         cfg.settings.bar_width,
@@ -857,7 +890,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 use windows_sys::Win32::UI::WindowsAndMessaging::*;
                 let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
                 if !tray_hwnd.is_null() {
-                    // Délégation asynchrone non-bloquante au thread systray pour afficher le menu
                     unsafe {
                         PostMessageW(
                             tray_hwnd,
@@ -908,6 +940,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     text_color: "".to_string(),
                     hotkey_modifiers: Vec::new(),
                     hotkey_key: String::new(),
+                    row: 0,
                     items: Vec::new(),
                 };
                 cfg.containers.push(new_cont);
@@ -994,7 +1027,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // 5. Sauvegarder les infos du conteneur (nom, icône, largeur, mode affichage, couleurs, raccourci dédié)
+    // 5. Sauvegarder les infos du conteneur (nom, icône, largeur, mode affichage, couleurs, raccourci dédié, ligne)
     {
         let settings_weak = settings_window.as_weak();
         let bar_weak = bar_window.as_weak();
@@ -1012,6 +1045,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cont.display_mode = sui.get_edit_container_display_mode().to_string();
                     cont.bg_color = sui.get_edit_container_bg().to_string();
                     cont.text_color = sui.get_edit_container_text().to_string();
+                    cont.row = sui.get_edit_container_row() as usize;
 
                     let mut mods = Vec::new();
                     if sui.get_edit_cont_mod_ctrl() { mods.push("Control".to_string()); }
@@ -1026,8 +1060,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     #[cfg(windows)]
                     {
                         use windows_sys::Win32::Foundation::HWND;
+                        let bar_hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
+                        if !bar_hwnd.is_null() {
+                            let total_h = get_total_bar_height(&cfg);
+                            if cfg.settings.stay_on_top {
+                                win32_utils::win32::register_appbar(bar_hwnd, &cfg.settings.bar_position, total_h);
+                            }
+                            win32_utils::win32::position_bar_window(
+                                bar_hwnd,
+                                &cfg.settings.bar_position,
+                                total_h,
+                                cfg.settings.bar_x,
+                                cfg.settings.bar_y,
+                                cfg.settings.bar_width,
+                                false,
+                                cfg.settings.stay_on_top,
+                            );
+                        }
+
                         let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
-                        register_all_hotkeys_for_app(tray_hwnd, &cfg);
+                        if !tray_hwnd.is_null() {
+                            register_all_hotkeys_for_app(tray_hwnd, &cfg);
+                        }
                     }
 
                     refresh_settings_ui(&sui, &cfg, idx);
@@ -1363,8 +1417,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
                     if !hwnd.is_null() {
+                        let total_h = get_total_bar_height(&cfg);
                         if cfg.settings.stay_on_top {
-                            win32_utils::win32::register_appbar(hwnd, &cfg.settings.bar_position, cfg.settings.bar_height as i32);
+                            win32_utils::win32::register_appbar(hwnd, &cfg.settings.bar_position, total_h);
                         } else {
                             win32_utils::win32::unregister_appbar(hwnd);
                         }
@@ -1372,7 +1427,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         win32_utils::win32::position_bar_window(
                             hwnd,
                             &cfg.settings.bar_position,
-                            cfg.settings.bar_height as i32,
+                            total_h,
                             cfg.settings.bar_x,
                             cfg.settings.bar_y,
                             cfg.settings.bar_width,

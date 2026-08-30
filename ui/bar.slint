@@ -12,6 +12,7 @@ export struct BarItemData {
 }
 
 export struct BarContainerData {
+    flat_idx: int,
     id: string,
     name: string,
     icon: string,
@@ -21,6 +22,11 @@ export struct BarContainerData {
     text_color: color,
     items: [BarItemData],
     hotkey_display: string,
+}
+
+export struct BarRowData {
+    row_idx: int,
+    containers: [BarContainerData],
 }
 
 component DropdownItemRow inherits Rectangle {
@@ -107,7 +113,8 @@ export component BarWindow inherits Window {
     in property <length> item_h: 26px;
     in property <length> container_font_sz: 11px;
     in property <length> item_font_sz: 11px;
-    in property <[BarContainerData]> containers_list: [];
+    in property <[BarRowData]> rows_list: [];
+    in property <int> rows_count: 1;
     in-out property <int> active_dropdown_idx: -1;
 
     callback launch_item(string);
@@ -121,7 +128,7 @@ export component BarWindow inherits Window {
 
         main_bar := Rectangle {
             width: 100%;
-            height: root.bar_h;
+            height: root.bar_h * max(1, root.rows_count);
             background: root.bar_bg_color;
             border-bottom-left-radius: root.bar_position == "Top" ? 6px : 0px;
             border-bottom-right-radius: root.bar_position == "Top" ? 6px : 0px;
@@ -144,126 +151,137 @@ export component BarWindow inherits Window {
                 }
             }
 
-            HorizontalLayout {
-                padding-left: 6px;
-                padding-right: 6px;
-                spacing: 4px;
-                alignment: root.containers_align == "Center" ? center : (root.containers_align == "Right" ? end : start);
+            rows_layout := VerticalLayout {
+                padding: 0px;
+                spacing: 0px;
+                alignment: start;
 
-                // Liste Horizontale des Conteneurs
-                for cont[idx] in root.containers_list : cont_wrapper := Rectangle {
-                    width: cont.width_val > 0px ? cont.width_val : cont_layout.min-width;
-                    height: parent.height;
+                for row_data[r_idx] in root.rows_list : row_rect := Rectangle {
+                    height: root.bar_h;
+                    width: 100%;
 
-                    // Bouton Conteneur pleine hauteur avec couleurs personnalisables
-                    cont_pill := Rectangle {
-                        width: parent.width;
-                        height: parent.height;
-                        background: cont.bg_color.alpha > 0 ? (
-                            (root.active_dropdown_idx == idx || c_touch.has-hover) ? cont.bg_color.brighter(0.2) : cont.bg_color
-                        ) : (
-                            (root.active_dropdown_idx == idx || c_touch.has-hover) ? #334155 : #1e293b00
-                        );
-                        border-radius: 4px;
-                        border-width: 1px;
-                        border-color: (root.active_dropdown_idx == idx || c_touch.has-hover) ? #60a5fa : #00000000;
-                        animate background { duration: 80ms; }
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        spacing: 4px;
+                        alignment: root.containers_align == "Center" ? center : (root.containers_align == "Right" ? end : start);
 
-                        cont_layout := HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            spacing: 6px;
-                            alignment: center;
-
-                            if cont.display_mode != "NameOnly" : Text {
-                                text: cont.icon;
-                                font-size: root.container_font_sz + 2px;
-                                vertical-alignment: center;
-                            }
-
-                            if cont.display_mode != "IconOnly" : Text {
-                                text: cont.name;
-                                font-size: root.container_font_sz;
-                                font-weight: 700;
-                                color: cont.text_color.alpha > 0 ? cont.text_color : root.bar_text_color;
-                                vertical-alignment: center;
-                            }
-
-                            Text {
-                                text: root.bar_position == "Bottom" ? "▴" : "▾";
-                                font-size: 8px;
-                                color: cont.text_color.alpha > 0 ? cont.text_color.darker(0.3) : #94a3b8;
-                                vertical-alignment: center;
-                            }
-                        }
-
-                        // TouchArea pour ouvrir le menu au survol ou le menu contextuel au clic droit
-                        c_touch := TouchArea {
-                            mouse-cursor: pointer;
-                            pointer-event(event) => {
-                                if event.kind == PointerEventKind.move || self.has-hover {
-                                    if root.active_dropdown_idx != idx {
-                                        root.active_dropdown_idx = idx;
-                                        root.dropdown_state_changed(true);
-                                    }
-                                } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
-                                    root.open_context_menu();
-                                }
-                            }
-                        }
-
-                        // Poignée de redimensionnement discrète
-                        resize_handle := Rectangle {
-                            x: parent.width - 5px;
-                            width: 5px;
+                        // Liste Horizontale des Conteneurs de cette ligne
+                        for cont[c_idx] in row_data.containers : cont_wrapper := Rectangle {
+                            width: cont.width_val > 0px ? cont.width_val : cont_layout.min-width;
                             height: parent.height;
-                            background: #00000000;
-                            TouchArea {
-                                mouse-cursor: col-resize;
-                                moved => {
-                                    let new_w = max(36px, cont_pill.width + (self.mouse-x - self.pressed-x));
-                                    root.container_width_changed(idx, new_w);
+
+                            // Bouton Conteneur pleine hauteur avec couleurs personnalisables
+                            cont_pill := Rectangle {
+                                width: parent.width;
+                                height: parent.height;
+                                background: cont.bg_color.alpha > 0 ? (
+                                    (root.active_dropdown_idx == cont.flat_idx || c_touch.has-hover) ? cont.bg_color.brighter(0.2) : cont.bg_color
+                                ) : (
+                                    (root.active_dropdown_idx == cont.flat_idx || c_touch.has-hover) ? #334155 : #1e293b00
+                                );
+                                border-radius: 4px;
+                                border-width: 1px;
+                                border-color: (root.active_dropdown_idx == cont.flat_idx || c_touch.has-hover) ? #60a5fa : #00000000;
+                                animate background { duration: 80ms; }
+
+                                cont_layout := HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 6px;
+                                    alignment: center;
+
+                                    if cont.display_mode != "NameOnly" : Text {
+                                        text: cont.icon;
+                                        font-size: root.container_font_sz + 2px;
+                                        vertical-alignment: center;
+                                    }
+
+                                    if cont.display_mode != "IconOnly" : Text {
+                                        text: cont.name;
+                                        font-size: root.container_font_sz;
+                                        font-weight: 700;
+                                        color: cont.text_color.alpha > 0 ? cont.text_color : root.bar_text_color;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Text {
+                                        text: root.bar_position == "Bottom" ? "▴" : "▾";
+                                        font-size: 8px;
+                                        color: cont.text_color.alpha > 0 ? cont.text_color.darker(0.3) : #94a3b8;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // TouchArea pour ouvrir le menu au survol ou le menu contextuel au clic droit
+                                c_touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    pointer-event(event) => {
+                                        if event.kind == PointerEventKind.move || self.has-hover {
+                                            if root.active_dropdown_idx != cont.flat_idx {
+                                                root.active_dropdown_idx = cont.flat_idx;
+                                                root.dropdown_state_changed(true);
+                                            }
+                                        } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                                            root.open_context_menu();
+                                        }
+                                    }
+                                }
+
+                                // Poignée de redimensionnement discrète
+                                resize_handle := Rectangle {
+                                    x: parent.width - 5px;
+                                    width: 5px;
+                                    height: parent.height;
+                                    background: #00000000;
+                                    TouchArea {
+                                        mouse-cursor: col-resize;
+                                        moved => {
+                                            let new_w = max(36px, cont_pill.width + (self.mouse-x - self.pressed-x));
+                                            root.container_width_changed(cont.flat_idx, new_w);
+                                        }
+                                    }
                                 }
                             }
-                        }
-                    }
 
-                    // Le Menu Déroulant rattaché DIRECTEMENT avec personnalisation des couleurs
-                    if root.active_dropdown_idx == idx : dropdown_popover := Rectangle {
-                        x: 0px;
-                        height: max(32px, (cont.items.length * (root.item_h + 2px)) + 8px);
-                        y: root.bar_position == "Bottom" ? -self.height : parent.height;
-                        width: max(cont_pill.width, max(190px, dropdown_layout.min-width + 16px));
-                        background: root.bar_bg_color;
-                        border-radius: 4px;
-                        border-width: 1px;
-                        border-color: #3b82f6cc;
-                        drop-shadow-blur: 10px;
-                        drop-shadow-color: #000000aa;
+                            // Le Menu Déroulant rattaché DIRECTEMENT avec personnalisation des couleurs
+                            if root.active_dropdown_idx == cont.flat_idx : dropdown_popover := Rectangle {
+                                x: 0px;
+                                height: max(32px, (cont.items.length * (root.item_h + 2px)) + 8px);
+                                y: root.bar_position == "Bottom" ? -self.height : parent.height;
+                                width: max(cont_pill.width, max(190px, dropdown_layout.min-width + 16px));
+                                background: root.bar_bg_color;
+                                border-radius: 4px;
+                                border-width: 1px;
+                                border-color: #3b82f6cc;
+                                drop-shadow-blur: 10px;
+                                drop-shadow-color: #000000aa;
 
-                        dropdown_layout := VerticalLayout {
-                            padding: 4px;
-                            spacing: 2px;
+                                dropdown_layout := VerticalLayout {
+                                    padding: 4px;
+                                    spacing: 2px;
 
-                            if cont.items.length == 0 : Rectangle {
-                                height: 26px;
-                                Text { text: "Aucun item."; color: #64748b; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
-                            }
+                                    if cont.items.length == 0 : Rectangle {
+                                        height: 26px;
+                                        Text { text: "Aucun item."; color: #64748b; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
 
-                            for itm in cont.items : DropdownItemRow {
-                                item_name: itm.name;
-                                icon_type: itm.icon_type;
-                                icon_emoji: itm.icon_emoji;
-                                icon_image: itm.icon_image;
-                                hotkey_display: itm.hotkey_display;
-                                item_h: root.item_h;
-                                font_sz: root.item_font_sz;
-                                custom_bg: itm.bg_color;
-                                custom_text: itm.text_color;
-                                clicked => {
-                                    root.active_dropdown_idx = -1;
-                                    root.dropdown_state_changed(false);
-                                    root.launch_item(itm.target);
+                                    for itm in cont.items : DropdownItemRow {
+                                        item_name: itm.name;
+                                        icon_type: itm.icon_type;
+                                        icon_emoji: itm.icon_emoji;
+                                        icon_image: itm.icon_image;
+                                        hotkey_display: itm.hotkey_display;
+                                        item_h: root.item_h;
+                                        font_sz: root.item_font_sz;
+                                        custom_bg: itm.bg_color;
+                                        custom_text: itm.text_color;
+                                        clicked => {
+                                            root.active_dropdown_idx = -1;
+                                            root.dropdown_state_changed(false);
+                                            root.launch_item(itm.target);
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -76,6 +76,8 @@ pub struct ContainerConfig {
     pub hotkey_modifiers: Vec<String>,
     #[serde(default)]
     pub hotkey_key: String,
+    #[serde(default)]
+    pub row: usize, // 0 = Ligne 1, 1 = Ligne 2, etc.
     pub items: Vec<LauncherItem>,
 }
 
@@ -135,6 +137,7 @@ pub fn default_config() -> AppConfig {
                 text_color: "".to_string(),
                 hotkey_modifiers: Vec::new(),
                 hotkey_key: String::new(),
+                row: 0,
                 items: vec![
                     LauncherItem {
                         id: generate_id(),
@@ -173,6 +176,7 @@ pub fn default_config() -> AppConfig {
                 text_color: "".to_string(),
                 hotkey_modifiers: Vec::new(),
                 hotkey_key: String::new(),
+                row: 0,
                 items: vec![
                     LauncherItem {
                         id: generate_id(),
