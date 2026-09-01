@@ -39,18 +39,82 @@ component DropdownItemRow inherits Rectangle {
     in property <length> font_sz: 11px;
     in property <color> custom_bg: #00000000;
     in property <color> custom_text: #ffffff;
+    in property <color> hover_color: #2563eb;
+    in property <string> hover_style: "Highlight";
+    in property <bool> wave_cycle: false;
     callback clicked;
 
-    height: root.item_h;
-    background: itm_touch.has-hover ? (root.custom_bg.alpha > 0 ? root.custom_bg : #2563eb) : #00000000;
-    border-radius: 4px;
-    animate background { duration: 60ms; }
+    property <color> eff_color: root.custom_bg.alpha > 0 ? root.custom_bg : root.hover_color;
 
-    HorizontalLayout {
-        padding-left: 8px;
+    height: root.item_h;
+    clip: true;
+
+    // Fond et bordures dynamiques selon le style de survol sélectionné
+    background: !itm_touch.has-hover ? #00000000 : (
+        root.hover_style == "WaveBorder" ? eff_color.transparentize(0.85) :
+        root.hover_style == "Blinking" ? (root.wave_cycle ? eff_color : eff_color.transparentize(0.70)) :
+        root.hover_style == "Glow" ? eff_color.transparentize(0.75) :
+        root.hover_style == "SlideAccent" ? eff_color.transparentize(0.85) :
+        root.hover_style == "ScalePop" ? eff_color.transparentize(0.40) :
+        root.hover_style == "GlassShimmer" ? eff_color.transparentize(0.55).brighter(0.2) :
+        root.hover_style == "UnderlineWave" ? eff_color.transparentize(0.90) :
+        eff_color
+    );
+
+    border-radius: (root.hover_style == "WaveBorder") ? 2px : 4px;
+    border-width: !itm_touch.has-hover ? 0px : (
+        root.hover_style == "WaveBorder" ? (root.wave_cycle ? 2px : 1px) :
+        root.hover_style == "Glow" ? 1.5px :
+        root.hover_style == "GlassShimmer" ? 1px : 0px
+    );
+    border-color: !itm_touch.has-hover ? #00000000 : (
+        root.hover_style == "WaveBorder" ? (root.wave_cycle ? eff_color.brighter(0.4) : eff_color) :
+        root.hover_style == "Glow" ? eff_color.brighter(0.5) :
+        root.hover_style == "GlassShimmer" ? #ffffff55 : #00000000
+    );
+
+    drop-shadow-blur: !itm_touch.has-hover ? 0px : (
+        root.hover_style == "Glow" ? 12px :
+        root.hover_style == "WaveBorder" ? (root.wave_cycle ? 8px : 3px) :
+        root.hover_style == "ScalePop" ? 6px : 0px
+    );
+    drop-shadow-color: root.hover_style == "ScalePop" ? #00000066 : eff_color;
+
+    animate background { duration: (root.hover_style == "Blinking" ? 220ms : 80ms); }
+    animate border-width { duration: 100ms; }
+    animate border-color { duration: 100ms; }
+
+    // Barre d'accentuation latérale (SlideAccent)
+    if root.hover_style == "SlideAccent" : Rectangle {
+        x: 0px;
+        y: 2px;
+        width: itm_touch.has-hover ? 4px : 0px;
+        height: parent.height - 4px;
+        background: eff_color.brighter(0.3);
+        border-radius: 2px;
+        animate width { duration: 120ms; easing: ease-out; }
+    }
+
+    // Barre de soulignement ondulant (UnderlineWave)
+    if root.hover_style == "UnderlineWave" : Rectangle {
+        x: itm_touch.has-hover ? (root.wave_cycle ? 4px : 12px) : 24px;
+        y: parent.height - 2px;
+        width: itm_touch.has-hover ? (root.wave_cycle ? parent.width - 8px : parent.width - 24px) : 0px;
+        height: 2px;
+        background: eff_color.brighter(0.3);
+        border-radius: 1px;
+        animate width { duration: 180ms; easing: ease-out; }
+        animate x { duration: 180ms; easing: ease-out; }
+    }
+
+    content_holder := HorizontalLayout {
+        x: (itm_touch.has-hover && root.hover_style == "ScalePop") ? 5px : 0px;
+        padding-left: (root.hover_style == "SlideAccent" && itm_touch.has-hover) ? 12px : 8px;
         padding-right: 8px;
         spacing: 6px;
         alignment: center;
+        animate x { duration: 100ms; easing: ease-out; }
+        animate padding-left { duration: 120ms; easing: ease-out; }
 
         if root.icon_type == "extracted" : Image {
             source: root.icon_image;
@@ -68,15 +132,17 @@ component DropdownItemRow inherits Rectangle {
 
         Text {
             text: root.item_name;
-            color: root.custom_text.alpha > 0 ? root.custom_text : #ffffff;
+            color: root.custom_text.alpha > 0 ? root.custom_text : (
+                (itm_touch.has-hover && root.hover_style == "Glow") ? eff_color.brighter(0.7) : #ffffff
+            );
             font-size: root.font_sz;
-            font-weight: 600;
+            font-weight: (itm_touch.has-hover && (root.hover_style == "Glow" || root.hover_style == "ScalePop")) ? 700 : 600;
             vertical-alignment: center;
             horizontal-stretch: 1;
         }
 
         if root.hotkey_display != "" : Rectangle {
-            background: itm_touch.has-hover ? #1d4ed8 : #334155;
+            background: itm_touch.has-hover ? eff_color.darker(0.2) : #334155;
             border-radius: 3px;
             height: 15px;
             HorizontalLayout {
@@ -85,7 +151,7 @@ component DropdownItemRow inherits Rectangle {
                 Text {
                     text: root.hotkey_display;
                     font-size: 9px;
-                    color: #93c5fd;
+                    color: itm_touch.has-hover ? #ffffff : #93c5fd;
                     font-weight: 700;
                     vertical-alignment: center;
                 }
@@ -109,6 +175,9 @@ export component BarWindow inherits Window {
     in property <string> containers_align: "Left"; // "Left", "Center", "Right"
     in property <color> bar_bg_color: #0f172a;
     in property <color> bar_text_color: #f8fafc;
+    in property <color> dropdown_hover_color: #2563eb;
+    in property <string> dropdown_hover_style: "Highlight";
+    in-out property <bool> anim_pulse: false;
     in property <length> bar_h: 36px;
     in property <length> item_h: 26px;
     in property <length> container_font_sz: 11px;
@@ -309,6 +378,9 @@ export component BarWindow inherits Window {
                                         font_sz: root.item_font_sz;
                                         custom_bg: itm.bg_color;
                                         custom_text: itm.text_color;
+                                        hover_color: root.dropdown_hover_color;
+                                        hover_style: root.dropdown_hover_style;
+                                        wave_cycle: root.anim_pulse;
                                         clicked => {
                                             root.active_dropdown_idx = -1;
                                             root.dropdown_state_changed(false);

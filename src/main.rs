@@ -127,8 +127,11 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
 
     let bar_bg = parse_hex_color(&cfg.settings.bar_bg_color, Color::from_argb_u8(255, 15, 23, 42));
     let bar_text = parse_hex_color(&cfg.settings.bar_text_color, Color::from_argb_u8(255, 248, 250, 252));
+    let hover_col = parse_hex_color(&cfg.settings.dropdown_hover_color, Color::from_argb_u8(255, 37, 99, 235));
     bar.set_bar_bg_color(bar_bg);
     bar.set_bar_text_color(bar_text);
+    bar.set_dropdown_hover_color(hover_col);
+    bar.set_dropdown_hover_style(cfg.settings.dropdown_hover_style.clone().into());
 
     let cache = cache_dir();
     let max_row = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0);
@@ -368,6 +371,10 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
     settings_win.set_pref_item_font(cfg.settings.item_font_size);
     settings_win.set_pref_bar_bg_color(cfg.settings.bar_bg_color.clone().into());
     settings_win.set_pref_bar_text_color(cfg.settings.bar_text_color.clone().into());
+    let hover_col = parse_hex_color(&cfg.settings.dropdown_hover_color, Color::from_argb_u8(255, 37, 99, 235));
+    settings_win.set_pref_dropdown_hover_color(cfg.settings.dropdown_hover_color.clone().into());
+    settings_win.set_pref_dropdown_hover_color_val(hover_col);
+    settings_win.set_pref_dropdown_hover_style(cfg.settings.dropdown_hover_style.clone().into());
     settings_win.set_pref_mod_ctrl(cfg.settings.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("control") || m.eq_ignore_ascii_case("ctrl")));
     settings_win.set_pref_mod_alt(cfg.settings.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("alt")));
     settings_win.set_pref_mod_shift(cfg.settings.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("shift")));
@@ -1702,6 +1709,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cfg.settings.item_font_size = sui.get_pref_item_font();
                 cfg.settings.bar_bg_color = sui.get_pref_bar_bg_color().to_string();
                 cfg.settings.bar_text_color = sui.get_pref_bar_text_color().to_string();
+                cfg.settings.dropdown_hover_color = sui.get_pref_dropdown_hover_color().to_string();
+                cfg.settings.dropdown_hover_style = sui.get_pref_dropdown_hover_style().to_string();
 
                 let mut mods = Vec::new();
                 if sui.get_pref_mod_ctrl() { mods.push("Control".to_string()); }
@@ -1766,6 +1775,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 trim_process_memory();
             }
         });
+    }
+
+    // ================= TIMER D'ANIMATION POUR EFFETS DE SURVOL (PULSE / ONDULATION) =================
+    {
+        let bw = bar_window.as_weak();
+        let sw = settings_window.as_weak();
+        let pulse_timer = slint::Timer::default();
+        pulse_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(280), move || {
+            if let Some(bui) = bw.upgrade() {
+                if bui.get_active_dropdown_idx() >= 0 {
+                    bui.set_anim_pulse(!bui.get_anim_pulse());
+                }
+            }
+            if let Some(sui) = sw.upgrade() {
+                sui.set_preview_anim_pulse(!sui.get_preview_anim_pulse());
+                let txt = sui.get_pref_dropdown_hover_color();
+                let col = parse_hex_color(&txt, Color::from_argb_u8(255, 37, 99, 235));
+                sui.set_pref_dropdown_hover_color_val(col);
+            }
+        });
+        std::mem::forget(pulse_timer);
     }
 
     // run_event_loop() (et non run_event_loop_until_quit()) :

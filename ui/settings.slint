@@ -81,6 +81,10 @@ export component SettingsWindow inherits Window {
     in-out property <float> pref_item_font: 11;
     in-out property <string> pref_bar_bg_color: "#0f172af8";
     in-out property <string> pref_bar_text_color: "#f8fafc";
+    in-out property <string> pref_dropdown_hover_color: "#2563eb";
+    in-out property <color> pref_dropdown_hover_color_val: #2563eb;
+    in-out property <string> pref_dropdown_hover_style: "Highlight";
+    in-out property <bool> preview_anim_pulse: false;
     in-out property <bool> pref_mod_ctrl: true;
     in-out property <bool> pref_mod_alt: false;
     in-out property <bool> pref_mod_shift: false;
@@ -646,6 +650,223 @@ export component SettingsWindow inherits Window {
                             placeholder-text: "#f8fafc";
                             horizontal-stretch: 1;
                         }
+                    }
+
+                    Rectangle { height: 1px; background: #334155; }
+
+                    Text { text: "✨ Survol des Menus Déroulants (Couleurs & Effets)"; font-size: 15px; font-weight: 800; color: #93c5fd; }
+
+                    // Style d'animation de survol
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Style d'effet au survol :"; font-size: 13px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; width: 250px; }
+                        ComboBox {
+                            model: [
+                                "🌟 Surbrillance Classique (Pleine)",
+                                "〰️ Cerclage Carré Ondulant",
+                                "⚡ Surbrillance Clignotante / Pulsante",
+                                "🔮 Lueur Néon / Halo Lumineux (Glow)",
+                                "⏩ Accent Latéral Coulissant (Slide Accent)",
+                                "🔍 Zoom & Décalage Dynamique (Scale & Pop)",
+                                "💎 Dégradé Givré / Reflet Verre (Glass Shimmer)",
+                                "〰️ Soulignement Ondulant Animé"
+                            ];
+                            current-value: root.pref_dropdown_hover_style == "WaveBorder" ? "〰️ Cerclage Carré Ondulant" :
+                                (root.pref_dropdown_hover_style == "Blinking" ? "⚡ Surbrillance Clignotante / Pulsante" :
+                                (root.pref_dropdown_hover_style == "Glow" ? "🔮 Lueur Néon / Halo Lumineux (Glow)" :
+                                (root.pref_dropdown_hover_style == "SlideAccent" ? "⏩ Accent Latéral Coulissant (Slide Accent)" :
+                                (root.pref_dropdown_hover_style == "ScalePop" ? "🔍 Zoom & Décalage Dynamique (Scale & Pop)" :
+                                (root.pref_dropdown_hover_style == "GlassShimmer" ? "💎 Dégradé Givré / Reflet Verre (Glass Shimmer)" :
+                                (root.pref_dropdown_hover_style == "UnderlineWave" ? "〰️ Soulignement Ondulant Animé" : "🌟 Surbrillance Classique (Pleine)"))))));
+                            selected(val) => {
+                                if val == "〰️ Cerclage Carré Ondulant" { root.pref_dropdown_hover_style = "WaveBorder"; }
+                                if val == "⚡ Surbrillance Clignotante / Pulsante" { root.pref_dropdown_hover_style = "Blinking"; }
+                                if val == "🔮 Lueur Néon / Halo Lumineux (Glow)" { root.pref_dropdown_hover_style = "Glow"; }
+                                if val == "⏩ Accent Latéral Coulissant (Slide Accent)" { root.pref_dropdown_hover_style = "SlideAccent"; }
+                                if val == "🔍 Zoom & Décalage Dynamique (Scale & Pop)" { root.pref_dropdown_hover_style = "ScalePop"; }
+                                if val == "💎 Dégradé Givré / Reflet Verre (Glass Shimmer)" { root.pref_dropdown_hover_style = "GlassShimmer"; }
+                                if val == "〰️ Soulignement Ondulant Animé" { root.pref_dropdown_hover_style = "UnderlineWave"; }
+                                if val == "🌟 Surbrillance Classique (Pleine)" { root.pref_dropdown_hover_style = "Highlight"; }
+                            }
+                        }
+                    }
+
+                    // Couleur du survol
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Couleur de survol (Hex) :"; font-size: 13px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; width: 250px; }
+                        LineEdit {
+                            text <=> root.pref_dropdown_hover_color;
+                            placeholder-text: "#2563eb";
+                            horizontal-stretch: 1;
+                        }
+                    }
+
+                    // Palette rapide de couleurs de survol
+                    HorizontalLayout {
+                        spacing: 8px;
+                        padding-left: 262px;
+                        Text { text: "Nuances rapides :"; font-size: 11px; color: #94a3b8; vertical-alignment: center; }
+                        // Pastille Bleu
+                        Rectangle {
+                            width: 24px; height: 20px; border-radius: 4px; background: #2563eb;
+                            border-width: root.pref_dropdown_hover_color == "#2563eb" ? 2px : 0px; border-color: #ffffff;
+                            TouchArea { mouse-cursor: pointer; clicked => { root.pref_dropdown_hover_color = "#2563eb"; root.pref_dropdown_hover_color_val = #2563eb; } }
+                        }
+                        // Pastille Cyan
+                        Rectangle {
+                            width: 24px; height: 20px; border-radius: 4px; background: #06b6d4;
+                            border-width: root.pref_dropdown_hover_color == "#06b6d4" ? 2px : 0px; border-color: #ffffff;
+                            TouchArea { mouse-cursor: pointer; clicked => { root.pref_dropdown_hover_color = "#06b6d4"; root.pref_dropdown_hover_color_val = #06b6d4; } }
+                        }
+                        // Pastille Violet
+                        Rectangle {
+                            width: 24px; height: 20px; border-radius: 4px; background: #8b5cf6;
+                            border-width: root.pref_dropdown_hover_color == "#8b5cf6" ? 2px : 0px; border-color: #ffffff;
+                            TouchArea { mouse-cursor: pointer; clicked => { root.pref_dropdown_hover_color = "#8b5cf6"; root.pref_dropdown_hover_color_val = #8b5cf6; } }
+                        }
+                        // Pastille Rose
+                        Rectangle {
+                            width: 24px; height: 20px; border-radius: 4px; background: #ec4899;
+                            border-width: root.pref_dropdown_hover_color == "#ec4899" ? 2px : 0px; border-color: #ffffff;
+                            TouchArea { mouse-cursor: pointer; clicked => { root.pref_dropdown_hover_color = "#ec4899"; root.pref_dropdown_hover_color_val = #ec4899; } }
+                        }
+                        // Pastille Émeraude
+                        Rectangle {
+                            width: 24px; height: 20px; border-radius: 4px; background: #10b981;
+                            border-width: root.pref_dropdown_hover_color == "#10b981" ? 2px : 0px; border-color: #ffffff;
+                            TouchArea { mouse-cursor: pointer; clicked => { root.pref_dropdown_hover_color = "#10b981"; root.pref_dropdown_hover_color_val = #10b981; } }
+                        }
+                        // Pastille Ambre / Orange
+                        Rectangle {
+                            width: 24px; height: 20px; border-radius: 4px; background: #f59e0b;
+                            border-width: root.pref_dropdown_hover_color == "#f59e0b" ? 2px : 0px; border-color: #ffffff;
+                            TouchArea { mouse-cursor: pointer; clicked => { root.pref_dropdown_hover_color = "#f59e0b"; root.pref_dropdown_hover_color_val = #f59e0b; } }
+                        }
+                        // Pastille Rouge
+                        Rectangle {
+                            width: 24px; height: 20px; border-radius: 4px; background: #ef4444;
+                            border-width: root.pref_dropdown_hover_color == "#ef4444" ? 2px : 0px; border-color: #ffffff;
+                            TouchArea { mouse-cursor: pointer; clicked => { root.pref_dropdown_hover_color = "#ef4444"; root.pref_dropdown_hover_color_val = #ef4444; } }
+                        }
+                    }
+
+                    // Zone de prévisualisation interactive en direct
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Aperçu interactif du survol :"; font-size: 13px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; width: 250px; }
+                        Rectangle {
+                            height: 48px;
+                            horizontal-stretch: 1;
+                            background: #0f172a;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: #334155;
+
+                            VerticalLayout {
+                                padding: 8px;
+                                alignment: center;
+
+                                preview_item := Rectangle {
+                                height: 32px;
+                                width: 100%;
+                                clip: true;
+
+                                background: !prev_touch.has-hover ? #00000000 : (
+                                    root.pref_dropdown_hover_style == "WaveBorder" ? root.pref_dropdown_hover_color_val.transparentize(0.85) :
+                                    root.pref_dropdown_hover_style == "Blinking" ? (root.preview_anim_pulse ? root.pref_dropdown_hover_color_val : root.pref_dropdown_hover_color_val.transparentize(0.70)) :
+                                    root.pref_dropdown_hover_style == "Glow" ? root.pref_dropdown_hover_color_val.transparentize(0.75) :
+                                    root.pref_dropdown_hover_style == "SlideAccent" ? root.pref_dropdown_hover_color_val.transparentize(0.85) :
+                                    root.pref_dropdown_hover_style == "ScalePop" ? root.pref_dropdown_hover_color_val.transparentize(0.40) :
+                                    root.pref_dropdown_hover_style == "GlassShimmer" ? root.pref_dropdown_hover_color_val.transparentize(0.55).brighter(0.2) :
+                                    root.pref_dropdown_hover_style == "UnderlineWave" ? root.pref_dropdown_hover_color_val.transparentize(0.90) :
+                                    root.pref_dropdown_hover_color_val
+                                );
+
+                                border-radius: (root.pref_dropdown_hover_style == "WaveBorder") ? 2px : 4px;
+                                border-width: !prev_touch.has-hover ? 0px : (
+                                    root.pref_dropdown_hover_style == "WaveBorder" ? (root.preview_anim_pulse ? 2px : 1px) :
+                                    root.pref_dropdown_hover_style == "Glow" ? 1.5px :
+                                    root.pref_dropdown_hover_style == "GlassShimmer" ? 1px : 0px
+                                );
+                                border-color: !prev_touch.has-hover ? #00000000 : (
+                                    root.pref_dropdown_hover_style == "WaveBorder" ? (root.preview_anim_pulse ? root.pref_dropdown_hover_color_val.brighter(0.4) : root.pref_dropdown_hover_color_val) :
+                                    root.pref_dropdown_hover_style == "Glow" ? root.pref_dropdown_hover_color_val.brighter(0.5) :
+                                    root.pref_dropdown_hover_style == "GlassShimmer" ? #ffffff55 : #00000000
+                                );
+
+                                drop-shadow-blur: !prev_touch.has-hover ? 0px : (
+                                    root.pref_dropdown_hover_style == "Glow" ? 12px :
+                                    root.pref_dropdown_hover_style == "WaveBorder" ? (root.preview_anim_pulse ? 8px : 3px) :
+                                    root.pref_dropdown_hover_style == "ScalePop" ? 6px : 0px
+                                );
+                                drop-shadow-color: root.pref_dropdown_hover_style == "ScalePop" ? #00000066 : root.pref_dropdown_hover_color_val;
+
+                                animate background { duration: (root.pref_dropdown_hover_style == "Blinking" ? 220ms : 80ms); }
+                                animate border-width { duration: 100ms; }
+                                animate border-color { duration: 100ms; }
+
+                                if root.pref_dropdown_hover_style == "SlideAccent" : Rectangle {
+                                    x: 0px;
+                                    y: 2px;
+                                    width: prev_touch.has-hover ? 4px : 0px;
+                                    height: parent.height - 4px;
+                                    background: root.pref_dropdown_hover_color_val.brighter(0.3);
+                                    border-radius: 2px;
+                                    animate width { duration: 120ms; easing: ease-out; }
+                                }
+
+                                if root.pref_dropdown_hover_style == "UnderlineWave" : Rectangle {
+                                    x: prev_touch.has-hover ? (root.preview_anim_pulse ? 4px : 12px) : 24px;
+                                    y: parent.height - 2px;
+                                    width: prev_touch.has-hover ? (root.preview_anim_pulse ? parent.width - 8px : parent.width - 24px) : 0px;
+                                    height: 2px;
+                                    background: root.pref_dropdown_hover_color_val.brighter(0.3);
+                                    border-radius: 1px;
+                                    animate width { duration: 180ms; easing: ease-out; }
+                                    animate x { duration: 180ms; easing: ease-out; }
+                                }
+
+                                HorizontalLayout {
+                                    x: (prev_touch.has-hover && root.pref_dropdown_hover_style == "ScalePop") ? 5px : 0px;
+                                    padding-left: (root.pref_dropdown_hover_style == "SlideAccent" && prev_touch.has-hover) ? 14px : 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: center;
+                                    animate x { duration: 100ms; easing: ease-out; }
+                                    animate padding-left { duration: 120ms; easing: ease-out; }
+
+                                    Text { text: "🚀"; font-size: 14px; vertical-alignment: center; }
+                                    Text {
+                                        text: "Survolez-moi pour tester l'animation !";
+                                        font-size: 12px;
+                                        font-weight: 700;
+                                        color: (prev_touch.has-hover && root.pref_dropdown_hover_style == "Glow") ? root.pref_dropdown_hover_color_val.brighter(0.7) : #ffffff;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Rectangle {
+                                        background: prev_touch.has-hover ? root.pref_dropdown_hover_color_val.darker(0.2) : #334155;
+                                        border-radius: 3px;
+                                        height: 16px;
+                                        HorizontalLayout {
+                                            padding-left: 5px;
+                                            padding-right: 5px;
+                                            Text {
+                                                text: "Ctrl + T";
+                                                font-size: 9px;
+                                                color: prev_touch.has-hover ? #ffffff : #93c5fd;
+                                                font-weight: 700;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                prev_touch := TouchArea { mouse-cursor: pointer; }
+                            }
+                        }
+                    }
                     }
 
                     Rectangle { height: 1px; background: #334155; }
