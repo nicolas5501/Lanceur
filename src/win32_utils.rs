@@ -11,6 +11,7 @@ pub mod win32 {
     use windows_sys::Win32::Foundation::*;
     use windows_sys::Win32::Graphics::Dwm::*;
     use windows_sys::Win32::Graphics::Gdi::*;
+    use windows_sys::Win32::System::Ole::*;
     use windows_sys::Win32::System::Registry::*;
     use windows_sys::Win32::System::Threading::*;
     use windows_sys::Win32::UI::Controls::*;
@@ -73,7 +74,44 @@ pub mod win32 {
         found_hwnd
     }
 
-    /// Subclass Window Procedure pour intercepter le vol de focus et résister à Win+D
+    /// Recherche fiable du HWND de la fenêtre des Paramètres
+    pub fn find_settings_hwnd() -> HWND {
+        unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let mut process_id: u32 = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, &mut process_id); }
+            if process_id == unsafe { GetCurrentProcessId() } {
+                let mut title_buf = [0u16; 256];
+                let len = unsafe { GetWindowTextW(hwnd, title_buf.as_mut_ptr(), 256) };
+                if len > 0 {
+                    let title = String::from_utf16_lossy(&title_buf[..len as usize]);
+                    if title.contains("Configuration du Lanceur") {
+                        unsafe { *(lparam as *mut HWND) = hwnd; }
+                        return 0;
+                    }
+                }
+            }
+            1
+        }
+        let mut found_hwnd: HWND = std::ptr::null_mut();
+        unsafe {
+            EnumWindows(Some(enum_proc), &mut found_hwnd as *mut _ as LPARAM);
+        }
+        found_hwnd
+    }
+
+    pub type DropCallback = Box<dyn Fn(Vec<String>, i32, i32, bool) + Send + Sync + 'static>;
+    pub static DROP_CALLBACK: std::sync::Mutex<Option<DropCallback>> = std::sync::Mutex::new(None);
+
+    pub fn set_drop_callback<F>(cb: F)
+    where
+        F: Fn(Vec<String>, i32, i32, bool) + Send + Sync + 'static,
+    {
+        if let Ok(mut lock) = DROP_CALLBACK.lock() {
+            *lock = Some(Box::new(cb));
+        }
+    }
+
+    /// Subclass Window Procedure pour intercepter le vol de focus, résister à Win+D et gérer le Drag & Drop
     unsafe extern "system" fn bar_wnd_proc_hook(
         hwnd: HWND,
         msg: u32,
@@ -118,6 +156,30 @@ pub mod win32 {
                 // Empêche formellement la fenêtre de voler le focus lors des clics souris ordinaires
                 return MA_NOACTIVATE as isize;
             }
+            WM_DROPFILES => {
+                let hdrop = wparam as HDROP;
+                let mut pt = POINT { x: 0, y: 0 };
+                unsafe { DragQueryPoint(hdrop, &mut pt); }
+                let count = unsafe { DragQueryFileW(hdrop, 0xffffffff, std::ptr::null_mut(), 0) };
+                let mut files = Vec::new();
+                for i in 0..count {
+                    let mut buf = [0u16; 512];
+                    let len = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), 512) };
+                    if len > 0 {
+                        files.push(String::from_utf16_lossy(&buf[..len as usize]));
+                    }
+                }
+                unsafe { DragFinish(hdrop); }
+
+                if !files.is_empty() {
+                    if let Ok(guard) = DROP_CALLBACK.lock() {
+                        if let Some(cb) = guard.as_ref() {
+                            cb(files, pt.x, pt.y, false);
+                        }
+                    }
+                }
+                return 0;
+            }
             WM_SYSCOMMAND => {
                 // Empêche Windows de minimiser le bandeau lors d'un Win+D
                 let cmd = (wparam & 0xFFF0) as u32;
@@ -149,6 +211,61 @@ pub mod win32 {
             _ => {}
         }
         unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+
+    /// Subclass Window Procedure pour la fenêtre des Paramètres (gestion du Drag & Drop)
+    unsafe extern "system" fn settings_wnd_proc_hook(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _uid_subclass: usize,
+        _ref_data: usize,
+    ) -> LRESULT {
+        match msg {
+            WM_DROPFILES => {
+                let hdrop = wparam as HDROP;
+                let mut pt = POINT { x: 0, y: 0 };
+                unsafe { DragQueryPoint(hdrop, &mut pt); }
+                let count = unsafe { DragQueryFileW(hdrop, 0xffffffff, std::ptr::null_mut(), 0) };
+                let mut files = Vec::new();
+                for i in 0..count {
+                    let mut buf = [0u16; 512];
+                    let len = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), 512) };
+                    if len > 0 {
+                        files.push(String::from_utf16_lossy(&buf[..len as usize]));
+                    }
+                }
+                unsafe { DragFinish(hdrop); }
+
+                if !files.is_empty() {
+                    if let Ok(guard) = DROP_CALLBACK.lock() {
+                        if let Some(cb) = guard.as_ref() {
+                            cb(files, pt.x, pt.y, true);
+                        }
+                    }
+                }
+                return 0;
+            }
+            _ => {}
+        }
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+
+    /// Applique le hook et active le Drag & Drop sur la fenêtre des Paramètres
+    pub fn setup_settings_window_styles(hwnd: HWND) {
+        if hwnd.is_null() {
+            return;
+        }
+        unsafe {
+            RemoveWindowSubclass(hwnd, Some(settings_wnd_proc_hook), 102);
+            SetWindowSubclass(hwnd, Some(settings_wnd_proc_hook), 102, 0);
+            let _ = RevokeDragDrop(hwnd);
+            DragAcceptFiles(hwnd, 1);
+            ChangeWindowMessageFilter(WM_DROPFILES, 1);
+            ChangeWindowMessageFilter(WM_COPYDATA, 1);
+            ChangeWindowMessageFilter(0x0049, 1);
+        }
     }
 
     /// Applique les styles ToolWindow, NoActivate et configure le mode stay_on_top
@@ -185,8 +302,12 @@ pub mod win32 {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             );
 
-            // Activer la réception du Drag & Drop
+            // Activer la réception du Drag & Drop et débloquer les filtres UIPI
+            let _ = RevokeDragDrop(hwnd);
             DragAcceptFiles(hwnd, 1);
+            ChangeWindowMessageFilter(WM_DROPFILES, 1);
+            ChangeWindowMessageFilter(WM_COPYDATA, 1);
+            ChangeWindowMessageFilter(0x0049, 1);
         }
     }
 
@@ -769,7 +890,6 @@ pub mod win32 {
             let wide_path = to_wide_null(target_path);
             let mut hicon: HICON = std::ptr::null_mut();
 
-            // Extraire l'icône principale du fichier
             ExtractIconExW(
                 wide_path.as_ptr(),
                 0,
@@ -872,4 +992,6 @@ pub mod win32 {
     pub fn extract_and_cache_icon(_target: &str, _cache: &Path) -> Option<PathBuf> { None }
     pub fn to_wide_null(_s: &str) -> Vec<u16> { Vec::new() }
     pub fn find_bar_hwnd() -> *mut std::ffi::c_void { std::ptr::null_mut() }
+    pub fn setup_settings_window_styles(_hwnd: *mut std::ffi::c_void) {}
+    pub fn set_drop_callback<F>(_cb: F) where F: Fn(Vec<String>, i32, i32, bool) + Send + Sync + 'static {}
 }

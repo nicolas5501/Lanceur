@@ -26,6 +26,7 @@ features = [
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_Controls",
+    "Win32_System_Ole",
 ]
 
 [build-dependencies]

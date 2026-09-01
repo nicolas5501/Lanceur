@@ -377,14 +377,19 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
     settings_win.set_pref_stay_on_top(cfg.settings.stay_on_top);
 }
 
-fn add_dropped_file_to_config(file_path: &str, config_arc: &Arc<Mutex<AppConfig>>) {
+fn add_dropped_file_to_container(file_path: &str, target_cont_idx: usize, config_arc: &Arc<Mutex<AppConfig>>) {
     let p = std::path::Path::new(file_path);
-    let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Nouvel Item".to_string());
+    let mut stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Nouvel Item".to_string());
+    if stem.is_empty() {
+        stem = file_path.to_string();
+    }
     
     let cache = cache_dir();
     let has_icon = win32_utils::win32::extract_and_cache_icon(file_path, &cache).is_some();
     let icon_type = if has_icon { "extracted".to_string() } else { "emoji".to_string() };
-    let icon_val = if has_icon { "".to_string() } else { "📁".to_string() };
+    let icon_val = if has_icon { "".to_string() } else {
+        if p.is_dir() { "📁".to_string() } else { "🚀".to_string() }
+    };
 
     let new_item = LauncherItem {
         id: generate_id(),
@@ -416,9 +421,81 @@ fn add_dropped_file_to_config(file_path: &str, config_arc: &Arc<Mutex<AppConfig>
             items: vec![new_item],
         });
     } else {
-        cfg.containers[0].items.push(new_item);
+        let safe_idx = target_cont_idx.min(cfg.containers.len() - 1);
+        cfg.containers[safe_idx].items.push(new_item);
     }
     save_config(&cfg);
+}
+
+fn find_container_at_coordinates(cfg: &AppConfig, x: i32, y: i32, bar_total_width: f32) -> usize {
+    if cfg.containers.is_empty() {
+        return 0;
+    }
+
+    let bar_h = cfg.settings.bar_height.max(20.0);
+    let target_row = (y.max(0) as f32 / bar_h) as usize;
+
+    // 1. Récupérer les conteneurs de la ligne correspondante
+    let mut row_containers: Vec<(usize, &ContainerConfig)> = cfg.containers
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.row == target_row)
+        .collect();
+
+    // Si aucun conteneur n'est sur cette ligne spécifique, prendre la ligne 0 ou tous
+    if row_containers.is_empty() {
+        row_containers = cfg.containers
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.row == 0)
+            .collect();
+    }
+    if row_containers.is_empty() {
+        row_containers = cfg.containers.iter().enumerate().collect();
+    }
+
+    // 2. Calculer la largeur de chaque conteneur
+    let font_sz = cfg.settings.container_font_size.max(9.0);
+    let mut estimated_widths: Vec<(usize, f32)> = Vec::new();
+    let mut total_row_w: f32 = 0.0;
+
+    for (orig_idx, cont) in &row_containers {
+        let w = if cont.width > 0.0 {
+            cont.width
+        } else {
+            let mut text_w = 0.0;
+            if cont.display_mode != "IconOnly" {
+                text_w += cont.name.chars().count() as f32 * (font_sz * 0.70);
+            }
+            let mut icon_w = 0.0;
+            if cont.display_mode != "NameOnly" {
+                icon_w += font_sz + 8.0;
+            }
+            (24.0 + icon_w + text_w + 14.0).max(45.0)
+        };
+        estimated_widths.push((*orig_idx, w));
+        total_row_w += w + 4.0;
+    }
+
+    // 3. Offset de départ selon l'alignement
+    let is_floating = cfg.settings.bar_position == "Floating";
+    let left_pad = if is_floating { 28.0 } else { 6.0 };
+    let mut start_x = match cfg.settings.containers_alignment.as_str() {
+        "Center" => ((bar_total_width - total_row_w) / 2.0).max(left_pad),
+        "Right" => (bar_total_width - total_row_w - 12.0).max(left_pad),
+        _ => left_pad,
+    };
+
+    let drop_xf = x.max(0) as f32;
+    for (orig_idx, w) in estimated_widths {
+        if drop_xf >= start_x && drop_xf <= (start_x + w + 4.0) {
+            return orig_idx;
+        }
+        start_x += w + 4.0;
+    }
+
+    // Si on a dépassé à droite, renvoyer le dernier conteneur de la ligne
+    row_containers.last().map(|(idx, _)| *idx).unwrap_or(0)
 }
 
 #[cfg(windows)]
@@ -777,12 +854,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         use windows_sys::Win32::Foundation::HWND;
                                         use windows_sys::Win32::UI::WindowsAndMessaging::*;
                                         let bring_to_front = || {
-                                            let title_wide = win32_utils::win32::to_wide_null("⚙️ Configuration du Lanceur");
-                                            let hwnd: HWND = FindWindowW(std::ptr::null(), title_wide.as_ptr());
+                                            let hwnd: HWND = win32_utils::win32::find_settings_hwnd();
                                             if !hwnd.is_null() {
                                                 let mut pid: u32 = 0;
                                                 GetWindowThreadProcessId(hwnd, &mut pid);
                                                 if pid == windows_sys::Win32::System::Threading::GetCurrentProcessId() {
+                                                    win32_utils::win32::setup_settings_window_styles(hwnd);
                                                     ShowWindow(hwnd, SW_RESTORE);
                                                     SetForegroundWindow(hwnd);
                                                     BringWindowToTop(hwnd);
@@ -824,15 +901,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let is_vis = is_vis_for_hk.clone();
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = bw.upgrade() {
-                                let is_fore = win32_utils::win32::is_bar_window_foreground();
-                                let is_vis_on_screen = win32_utils::win32::is_bar_window_visible();
-                                if is_fore && is_vis_on_screen {
-                                    hide_bar_window();
-                                    is_vis.store(false, Ordering::SeqCst);
-                                } else {
-                                    show_bar_window(&ui, false);
-                                    is_vis.store(true, Ordering::SeqCst);
-                                }
+                                // Toujours afficher et amener au premier plan sans basculer en masquage
+                                show_bar_window(&ui, false);
+                                is_vis.store(true, Ordering::SeqCst);
                             }
                         });
                     } else if (10000..20000).contains(&hk_id) {
@@ -882,7 +953,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let sel = sel_for_drop.clone();
 
                     let _ = slint::invoke_from_event_loop(move || {
-                        add_dropped_file_to_config(&file_path, &cfg_arc);
+                        add_dropped_file_to_container(&file_path, 0, &cfg_arc);
                         let cfg_guard = cfg_arc.lock().unwrap();
                         if let Some(bui) = bw.upgrade() {
                             refresh_bar_ui(&bui, &cfg_guard);
@@ -912,6 +983,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 win32_utils::win32::remove_tray_icon(msg_hwnd);
             }
+        });
+    }
+
+    // ================= ENREGISTREMENT DU DRAG & DROP GLOBAL =================
+    {
+        let cfg_for_drop = app_config.clone();
+        let bw_for_drop = bar_window.as_weak();
+        let sw_for_drop = settings_window.as_weak();
+        let sel_for_drop = selected_container_idx.clone();
+
+        win32_utils::win32::set_drop_callback(move |files, drop_x, drop_y, is_settings| {
+            let cfg_arc = cfg_for_drop.clone();
+            let bw = bw_for_drop.clone();
+            let sw = sw_for_drop.clone();
+            let sel = sel_for_drop.clone();
+
+            let _ = slint::invoke_from_event_loop(move || {
+                let target_cont_idx = if is_settings {
+                    sel.load(Ordering::SeqCst)
+                } else {
+                    let cfg_guard = cfg_arc.lock().unwrap();
+                    let bar_w = if let Some(bui) = bw.upgrade() {
+                        let sz = bui.window().size();
+                        if sz.width > 0 { sz.width as f32 } else { 1920.0 }
+                    } else {
+                        1920.0
+                    };
+                    find_container_at_coordinates(&cfg_guard, drop_x, drop_y, bar_w)
+                };
+
+                for f in files {
+                    add_dropped_file_to_container(&f, target_cont_idx, &cfg_arc);
+                }
+
+                let cfg_guard = cfg_arc.lock().unwrap();
+                if let Some(bui) = bw.upgrade() {
+                    refresh_bar_ui(&bui, &cfg_guard);
+                }
+                if let Some(sui) = sw.upgrade() {
+                    refresh_settings_ui(&sui, &cfg_guard, sel.load(Ordering::SeqCst));
+                }
+                trim_process_memory();
+            });
         });
     }
 
@@ -1057,6 +1171,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let cfg = cfg_arc.lock().unwrap();
                 refresh_settings_ui(&sui, &cfg, sel_idx.load(Ordering::SeqCst));
                 let _ = sui.show();
+
+                #[cfg(windows)]
+                {
+                    use windows_sys::Win32::Foundation::HWND;
+                    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+                    let bring_to_front = || {
+                        let hwnd: HWND = win32_utils::win32::find_settings_hwnd();
+                        if !hwnd.is_null() {
+                            unsafe {
+                                let mut pid: u32 = 0;
+                                GetWindowThreadProcessId(hwnd, &mut pid);
+                                if pid == windows_sys::Win32::System::Threading::GetCurrentProcessId() {
+                                    win32_utils::win32::setup_settings_window_styles(hwnd);
+                                    ShowWindow(hwnd, SW_RESTORE);
+                                    SetForegroundWindow(hwnd);
+                                    BringWindowToTop(hwnd);
+                                    windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(hwnd);
+                                }
+                            }
+                        }
+                    };
+                    bring_to_front();
+                    slint::Timer::single_shot(std::time::Duration::from_millis(100), move || {
+                        bring_to_front();
+                    });
+                }
             }
         });
     }
