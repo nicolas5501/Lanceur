@@ -124,6 +124,7 @@ export component BarWindow inherits Window {
     callback container_width_changed(int, length);
     callback window_drag_started();
     callback window_dragged(length, length);
+    callback window_width_changed(length);
 
     VerticalLayout {
         alignment: root.bar_position == "Bottom" ? end : start;
@@ -132,14 +133,14 @@ export component BarWindow inherits Window {
             width: 100%;
             height: root.bar_h * max(1, root.rows_count);
             background: root.bar_bg_color;
-            border-bottom-left-radius: root.bar_position == "Top" ? 6px : 0px;
-            border-bottom-right-radius: root.bar_position == "Top" ? 6px : 0px;
-            border-top-left-radius: root.bar_position == "Bottom" ? 6px : 0px;
-            border-top-right-radius: root.bar_position == "Bottom" ? 6px : 0px;
+            border-bottom-left-radius: (root.bar_position == "Top" || root.bar_position == "Floating") ? 6px : 0px;
+            border-bottom-right-radius: (root.bar_position == "Top" || root.bar_position == "Floating") ? 6px : 0px;
+            border-top-left-radius: (root.bar_position == "Bottom" || root.bar_position == "Floating") ? 6px : 0px;
+            border-top-right-radius: (root.bar_position == "Bottom" || root.bar_position == "Floating") ? 6px : 0px;
             border-width: 1px;
             border-color: #334155aa;
 
-            // TouchArea d'arrière-plan du bandeau : ferme le menu au survol et gère le clic droit
+            // TouchArea d'arrière-plan du bandeau : ferme le menu au survol et gère le clic droit / drag
             bar_bg_touch := TouchArea {
                 pointer-event(event) => {
                     if event.kind == PointerEventKind.move {
@@ -171,9 +172,32 @@ export component BarWindow inherits Window {
 
                     HorizontalLayout {
                         padding-left: 6px;
-                        padding-right: 6px;
+                        padding-right: root.bar_position == "Floating" ? 14px : 6px;
                         spacing: 4px;
                         alignment: root.containers_align == "Center" ? center : (root.containers_align == "Right" ? end : start);
+
+                        // Poignée de déplacement explicite en mode Flottant
+                        if root.bar_position == "Floating" : Rectangle {
+                            width: 18px;
+                            height: parent.height;
+                            Text {
+                                text: "⠿";
+                                font-size: 13px;
+                                color: #64748b;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                mouse-cursor: move;
+                                pointer-event(event) => {
+                                    if event.kind == PointerEventKind.down {
+                                        root.window_drag_started();
+                                    } else if event.kind == PointerEventKind.move && self.pressed {
+                                        root.window_dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                                    }
+                                }
+                            }
+                        }
 
                         // Liste Horizontale des Conteneurs de cette ligne
                         for cont[c_idx] in row_data.containers : cont_wrapper := Rectangle {
@@ -294,6 +318,21 @@ export component BarWindow inherits Window {
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // Poignée de redimensionnement de la largeur du bandeau en mode Flottant
+            if root.bar_position == "Floating" : Rectangle {
+                x: parent.width - 8px;
+                width: 8px;
+                height: parent.height;
+                background: #00000000;
+                TouchArea {
+                    mouse-cursor: ew-resize;
+                    moved => {
+                        let new_w = max(260px, main_bar.width + (self.mouse-x - self.pressed-x));
+                        root.window_width_changed(new_w);
                     }
                 }
             }

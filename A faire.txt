@@ -1,5 +1,5 @@
-quand on active la persistance au windows+d avec un positionnement à top, le bandeau s'affiche mais décalé d'une hauteur de bandeau vers le bas, toutes les fenetres se retrouvent amputées de la hauteur du bandeau et le bandeau reste toujours au premier plan écrasant le bandeau supérieur des autres fenetres.
-Lorsque l'option n'est pas activée, le bandeau est bien affiché tout en haut de l'écran.
-L'application fences v6 n'a pas ce problème. 
-Deplus en mode flottant le bandeau n'est pas déplacable ni redimentionnable.
-Lors que l'application n'a pas l'option résistance à windows+D active, l'appui sur windows+d cache la fenetre (conforme à l'attendu) mais il est ensuite nécessaire de faire 2 appel au raccoursi d'ouverture pour voir s'afficher la fentre
+[FAIT] 1: Décalage vers le bas et amputation de la hauteur des fenêtres (Résolu : pas de réservation work area, positionnement au pixel près).
+[FAIT] 2: Bandeau affiché tout en haut sans écraser les autres fenêtres (Résolu : Z-Order HWND_NOTOPMOST).
+[FAIT] 3: Persistance bureau identique à Fences v6 (Résolu : Owner Progman + hook SWP_HIDEWINDOW).
+[FAIT] 4: Déplacement et redimensionnement en mode flottant (Résolu : poignée de drag et poignée de resize).
+[FAIT] 5: Double appel au raccourci après Windows+D (Résolu : détection de visibilité réelle par coordonnées).

@@ -84,21 +84,34 @@ pub mod win32 {
     ) -> LRESULT {
         match msg {
             WM_NCCALCSIZE => {
-                // Supprime totalement le cadre non-client (barre de titre et bordures DWM)
+                // Supprime totalement le cadre non-client
                 if wparam != 0 {
                     return 0;
                 }
             }
             WM_NCACTIVATE => {
-                // Empêche Windows de dessiner la barre de titre standard "Lanceur Bandeau"
+                // Empêche Windows de dessiner la barre de titre standard
+                return 1;
+            }
+            WM_ACTIVATE => {
+                let state = (wparam & 0xFFFF) as u32;
+                if state == WA_INACTIVE as u32 {
+                    if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
+                        unsafe {
+                            let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
+                            if !progman.is_null() {
+                                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
+                            }
+                        }
+                    }
+                }
                 return 1;
             }
             WM_ERASEBKGND => {
-                // Empêche formellement Windows de repeindre le fond en blanc par défaut
+                // Empêche Windows d'effacer le fond avec un pinceau blanc standard
                 return 1;
             }
             WM_NCPAINT => {
-                // Empêche Windows de dessiner une bordure ou barre de titre standard non-client
                 return 0;
             }
             WM_MOUSEACTIVATE => {
@@ -116,27 +129,20 @@ pub mod win32 {
                 }
             }
             WM_WINDOWPOSCHANGING => {
-                // Windows+D masque temporairement les fenêtres top-level.
-                // WM_SHOWWINDOW programme leur réaffichage non-activant.
-            }
-            WM_TIMER => {
-                if wparam == VISIBILITY_TIMER_ID {
-                    unsafe {
-                        if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst)
-                            && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst)
-                            && IsWindowVisible(hwnd) == 0
-                        {
-                            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                            BAR_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
-                        }
-                    }
-                    return 0;
+                if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) && lparam != 0 {
+                    let pos = unsafe { &mut *(lparam as *mut WINDOWPOS) };
+                    // Empêcher le masquage automatique déclenché par Windows+D
+                    pos.flags &= !SWP_HIDEWINDOW;
                 }
             }
             WM_SHOWWINDOW => {
                 if wparam == 0 {
+                    if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
+                        // Bloquer le masquage automatique déclenché par Windows+D
+                        return 0;
+                    }
                     BAR_WINDOW_VISIBLE.store(false, Ordering::SeqCst);
-                } else if wparam != 0 {
+                } else {
                     BAR_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
                 }
             }
@@ -145,9 +151,6 @@ pub mod win32 {
         unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
     }
 
-    /// Rattache la fenêtre à Progman (Bureau Windows, architecture Stardock Fences / Desktop Widgets).
-    /// Permet à la fenêtre de résister à Win + D (car elle fait partie intégrante du Bureau)
-    /// tout en cédant 100% du focus et du premier plan aux autres applications actives.
     /// Applique les styles ToolWindow, NoActivate et configure le mode stay_on_top
     pub fn setup_bar_window_styles(hwnd: HWND, stay_on_top: bool, floating: bool) {
         if hwnd.is_null() {
@@ -159,28 +162,22 @@ pub mod win32 {
             RemoveWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101);
             SetWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101, 0);
 
-            // 2. Styles étendus : ToolWindow + NoActivate
+            // 2. Styles étendus : ToolWindow + NoActivate, JAMAIS de WS_EX_TOPMOST pour ne jamais écraser les applications actives
             let mut ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
             ex_style |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
             ex_style &= !WS_EX_APPWINDOW;
             ex_style &= !WS_EX_TOPMOST;
             SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style as i32);
 
-            // 3. Styles standard (WS_POPUP pur sans bordures ni barres)
+            // 3. Styles standard : TOUJOURS WS_POPUP (jamais WS_CHILD) pour préserver le moteur de rendu Direct3D/Slint et les menus déroulants
             let mut style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-            style &= !(WS_CAPTION | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME);
-            if floating {
-                style |= WS_THICKFRAME;
-            } else {
-                style &= !WS_THICKFRAME;
-            }
-            style |= WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
-            style |= WS_POPUP;
+            style &= !(WS_CAPTION | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME | WS_CHILD);
+            style |= WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VISIBLE;
             SetWindowLongW(hwnd, GWL_STYLE, style as i32);
 
             SetWindowPos(
                 hwnd,
-                HWND_TOP,
+                HWND_NOTOPMOST,
                 0,
                 0,
                 0,
@@ -188,58 +185,169 @@ pub mod win32 {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             );
 
-            // 4. Définir un pinceau de classe sombre pour que Windows ne peigne JAMAIS de fond blanc
-            use windows_sys::Win32::Graphics::Gdi::*;
-            let dark_brush = CreateSolidBrush(0x002a170f); // RGB(15, 23, 42) = #0f172a
-            SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, dark_brush as isize);
-
             // Activer la réception du Drag & Drop
             DragAcceptFiles(hwnd, 1);
         }
     }
 
-    unsafe extern "system" fn find_workerw_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let shell_view = unsafe {
-            FindWindowExW(
-                hwnd,
-                std::ptr::null_mut(),
-                to_wide_null("SHELLDLL_DefView").as_ptr(),
-                std::ptr::null(),
-            )
-        };
-        if !shell_view.is_null() {
-            let workerw = unsafe {
-                FindWindowExW(
-                    std::ptr::null_mut(),
-                    hwnd,
-                    to_wide_null("WorkerW").as_ptr(),
-                    std::ptr::null(),
-                )
-            };
-            if !workerw.is_null() {
-                unsafe {
-                    *(lparam as *mut HWND) = workerw;
-                }
-                return 0;
-            }
-        }
-        1
-    }
-
+    /// Configure Progman comme propriétaire de la fenêtre Popup (architecture Fences).
+    /// Maintient le bandeau au-dessus du Bureau lors de Win+D tout en laissant toutes
+    /// les fenêtres d'applications actives s'afficher au-dessus de lui.
     pub fn set_desktop_parent(hwnd: HWND, enabled: bool) {
-        let _ = (hwnd, enabled);
-        DESKTOP_PARENT.store(0, Ordering::SeqCst);
-    }
-
-    /// Amène la fenêtre au premier plan absolu au-dessus de toutes les fenêtres ouvertes
-    pub fn bring_to_foreground(hwnd: HWND, stay_on_top: bool) {
         if hwnd.is_null() {
             return;
         }
         unsafe {
-            SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
+            if enabled && !progman.is_null() {
+                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
+                DESKTOP_PARENT.store(progman as usize, Ordering::SeqCst);
+            } else {
+                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
+                DESKTOP_PARENT.store(0, Ordering::SeqCst);
+            }
         }
+    }
+
+    /// Recherche le conteneur hôte du bureau Windows (Progman ou WorkerW contenant SHELLDLL_DefView).
+    /// Architecture identique à Stardock Fences / Rainmeter Desktop Widgets.
+    pub fn get_desktop_host_window() -> HWND {
+        unsafe {
+            let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
+            if progman.is_null() {
+                return std::ptr::null_mut();
+            }
+
+            // Envoi du message non documenté 0x052C pour scinder la pile WorkerW
+            let mut result: usize = 0;
+            SendMessageTimeoutW(
+                progman,
+                0x052C,
+                0x0000000D,
+                0,
+                SMTO_NORMAL,
+                1000,
+                &mut result as *mut usize as *mut _,
+            );
+
+            // 1. Vérifier si SHELLDLL_DefView est directement dans Progman
+            let defview_in_progman = FindWindowExW(
+                progman,
+                std::ptr::null_mut(),
+                to_wide_null("SHELLDLL_DefView").as_ptr(),
+                std::ptr::null(),
+            );
+            if !defview_in_progman.is_null() {
+                return progman;
+            }
+
+            // 2. Sinon, énumérer les WorkerW top-level pour trouver celui qui abrite SHELLDLL_DefView
+            unsafe extern "system" fn enum_workerw_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+                unsafe {
+                    let def_view = FindWindowExW(
+                        hwnd,
+                        std::ptr::null_mut(),
+                        to_wide_null("SHELLDLL_DefView").as_ptr(),
+                        std::ptr::null(),
+                    );
+                    if !def_view.is_null() {
+                        *(lparam as *mut HWND) = hwnd;
+                        return 0; // Arrêter l'énumération dès qu'on le trouve
+                    }
+                }
+                1
+            }
+
+            let mut host_workerw: HWND = std::ptr::null_mut();
+            EnumWindows(Some(enum_workerw_proc), &mut host_workerw as *mut _ as LPARAM);
+
+            if !host_workerw.is_null() {
+                return host_workerw;
+            }
+
+            progman
+        }
+    }
+
+    /// Amène la fenêtre au premier plan actif au-dessus des autres fenêtres
+    pub fn bring_to_foreground(hwnd: HWND, _stay_on_top: bool) {
+        if hwnd.is_null() {
+            return;
+        }
+        unsafe {
+            // 1. Détacher temporairement de Progman pour permettre l'élévation Z-Order au premier plan
+            SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
+
+            let fore_wnd = GetForegroundWindow();
+            let target_thread = if !fore_wnd.is_null() {
+                GetWindowThreadProcessId(fore_wnd, std::ptr::null_mut())
+            } else {
+                0
+            };
+            let current_thread = GetCurrentThreadId();
+            let attached = target_thread != 0
+                && target_thread != current_thread
+                && AttachThreadInput(current_thread, target_thread, 1) != 0;
+
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+            SetActiveWindow(hwnd);
+
+            SetWindowPos(
+                hwnd,
+                HWND_NOTOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
+
+            if attached {
+                AttachThreadInput(current_thread, target_thread, 0);
+            }
+        }
+    }
+
+    /// Indique si la fenêtre du bandeau est actuellement la fenêtre active au premier plan
+    pub fn is_bar_window_foreground() -> bool {
+        let hwnd = find_bar_hwnd();
+        if hwnd.is_null() || unsafe { IsWindow(hwnd) == 0 } {
+            return false;
+        }
+        unsafe {
+            let fore = GetForegroundWindow();
+            fore == hwnd
+        }
+    }
+
+    /// Vérifie si le bandeau est actuellement visible à l'écran (non masqué hors écran)
+    pub fn is_bar_window_visible() -> bool {
+        let hwnd = find_bar_hwnd();
+        if hwnd.is_null() || unsafe { IsWindow(hwnd) == 0 } {
+            return false;
+        }
+        if BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
+            return false;
+        }
+        unsafe {
+            let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            if GetWindowRect(hwnd, &mut rect) != 0 {
+                if rect.left < -10000 || rect.top < -10000 {
+                    return false;
+                }
+            }
+        }
+        BAR_WINDOW_VISIBLE.load(Ordering::SeqCst)
     }
 
     pub fn restore_foreground_window(hwnd: HWND) {
@@ -455,6 +563,37 @@ pub mod win32 {
             "RETURN" | "ENTER" => VK_RETURN as u32,
             "TAB" => VK_TAB as u32,
             "ESCAPE" | "ESC" => VK_ESCAPE as u32,
+            "BACKSPACE" | "BACK" => VK_BACK as u32,
+            "PRINTSCREEN" | "PRINT" | "SNAPSHOT" => VK_SNAPSHOT as u32,
+            "PAUSE" => VK_PAUSE as u32,
+            "SCROLLLOCK" | "SCROLL" => VK_SCROLL as u32,
+            "INSERT" | "INS" => VK_INSERT as u32,
+            "DELETE" | "DEL" | "SUPPR" => VK_DELETE as u32,
+            "HOME" | "DEBUT" => VK_HOME as u32,
+            "END" | "FIN" => VK_END as u32,
+            "PAGEUP" | "PGUP" | "PRIOR" => VK_PRIOR as u32,
+            "PAGEDOWN" | "PGDN" | "NEXT" => VK_NEXT as u32,
+            "UP" | "HAUT" => VK_UP as u32,
+            "DOWN" | "BAS" => VK_DOWN as u32,
+            "LEFT" | "GAUCHE" => VK_LEFT as u32,
+            "RIGHT" | "DROITE" => VK_RIGHT as u32,
+            "CAPSLOCK" | "CAPS" | "CAPITAL" => VK_CAPITAL as u32,
+            "NUMLOCK" => VK_NUMLOCK as u32,
+            "NUMPAD0" => VK_NUMPAD0 as u32,
+            "NUMPAD1" => VK_NUMPAD1 as u32,
+            "NUMPAD2" => VK_NUMPAD2 as u32,
+            "NUMPAD3" => VK_NUMPAD3 as u32,
+            "NUMPAD4" => VK_NUMPAD4 as u32,
+            "NUMPAD5" => VK_NUMPAD5 as u32,
+            "NUMPAD6" => VK_NUMPAD6 as u32,
+            "NUMPAD7" => VK_NUMPAD7 as u32,
+            "NUMPAD8" => VK_NUMPAD8 as u32,
+            "NUMPAD9" => VK_NUMPAD9 as u32,
+            "MULTIPLY" => VK_MULTIPLY as u32,
+            "ADD" => VK_ADD as u32,
+            "SUBTRACT" => VK_SUBTRACT as u32,
+            "DECIMAL" => VK_DECIMAL as u32,
+            "DIVIDE" => VK_DIVIDE as u32,
             "F1" => VK_F1 as u32,
             "F2" => VK_F2 as u32,
             "F3" => VK_F3 as u32,
@@ -467,6 +606,18 @@ pub mod win32 {
             "F10" => VK_F10 as u32,
             "F11" => VK_F11 as u32,
             "F12" => VK_F12 as u32,
+            "F13" => 0x7C,
+            "F14" => 0x7D,
+            "F15" => 0x7E,
+            "F16" => 0x7F,
+            "F17" => 0x80,
+            "F18" => 0x81,
+            "F19" => 0x82,
+            "F20" => 0x83,
+            "F21" => 0x84,
+            "F22" => 0x85,
+            "F23" => 0x86,
+            "F24" => 0x87,
             s if s.len() == 1 => {
                 let c = s.chars().next().unwrap();
                 c as u32
@@ -708,7 +859,10 @@ pub mod win32 {
     pub static BAR_EXPLICITLY_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     pub fn setup_bar_window_styles(_hwnd: *mut std::ffi::c_void, _stay_on_top: bool, _floating: bool) {}
     pub fn position_bar_window(_hwnd: *mut std::ffi::c_void, _pos: &str, _h: i32, _x: i32, _y: i32, _w: i32, _exp: bool, _stay: bool) {}
-    pub fn bring_to_foreground(_hwnd: *mut std::ffi::c_void) {}
+    pub fn bring_to_foreground(_hwnd: *mut std::ffi::c_void, _stay_on_top: bool) {}
+    pub fn set_desktop_parent(_hwnd: *mut std::ffi::c_void, _enabled: bool) {}
+    pub fn is_bar_window_visible() -> bool { true }
+    pub fn is_bar_window_foreground() -> bool { false }
     pub fn register_hotkey_combo(_hwnd: *mut std::ffi::c_void, _id: i32, _mods: &[String], _key: &str) -> bool { true }
     pub fn unregister_hotkey_id(_hwnd: *mut std::ffi::c_void, _id: i32) {}
     pub fn create_tray_icon(_hwnd: *mut std::ffi::c_void, _tip: &str) -> bool { true }

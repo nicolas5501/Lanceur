@@ -432,9 +432,10 @@ export component SettingsWindow inherits Window {
                                 alignment: center;
                                 CheckBox { text: "Ctrl"; checked <=> root.edit_cont_mod_ctrl; toggled => { root.save_container_info(); } }
                                 CheckBox { text: "Alt"; checked <=> root.edit_cont_mod_alt; toggled => { root.save_container_info(); } }
+                                CheckBox { text: "Shift"; checked <=> root.edit_cont_mod_shift; toggled => { root.save_container_info(); } }
                                 CheckBox { text: "Win"; checked <=> root.edit_cont_mod_win; toggled => { root.save_container_info(); } }
                                 ComboBox {
-                                    model: ["", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"];
+                                    model: ["", "Space", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Insert", "Delete", "Home", "End", "PageUp", "PageDown", "PrintScreen", "Pause", "ScrollLock", "Tab", "Escape", "Enter", "Backspace", "NumLock", "Caps", "Up", "Down", "Left", "Right", "Numpad0", "Numpad1", "Numpad2", "Numpad3", "Numpad4", "Numpad5", "Numpad6", "Numpad7", "Numpad8", "Numpad9", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
                                     current-value <=> root.edit_cont_hotkey_key;
                                     selected => { root.save_container_info(); }
                                 }
@@ -742,7 +743,7 @@ export component SettingsWindow inherits Window {
                         CheckBox { text: "Win"; checked <=> root.pref_mod_win; }
                         Text { text: "+ Touche :"; color: #cbd5e1; vertical-alignment: center; }
                         ComboBox {
-                            model: ["Space", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Tab", "Escape", "1", "2", "3", "4", "5", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
+                            model: ["Space", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Insert", "Delete", "Home", "End", "PageUp", "PageDown", "PrintScreen", "Pause", "ScrollLock", "Tab", "Escape", "Enter", "Backspace", "NumLock", "Caps", "Up", "Down", "Left", "Right", "Numpad0", "Numpad1", "Numpad2", "Numpad3", "Numpad4", "Numpad5", "Numpad6", "Numpad7", "Numpad8", "Numpad9", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
                             current-value <=> root.pref_hotkey_key;
                         }
                     }
@@ -757,7 +758,7 @@ export component SettingsWindow inherits Window {
                     }
 
                     CheckBox {
-                        text: "Garder toujours au premier plan & persistant après Win + D";
+                        text: "Persistance sur le Bureau après Win + D (style Fences, sous les fenêtres actives)";
                         checked <=> root.pref_stay_on_top;
                     }
                 }
@@ -896,7 +897,7 @@ export component SettingsWindow inherits Window {
                     CheckBox { text: "Shift"; checked <=> root.item_edit_mod_shift; }
                     CheckBox { text: "Win"; checked <=> root.item_edit_mod_win; }
                     ComboBox {
-                        model: ["", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "1", "2", "3", "4", "5", "6", "7", "8", "9", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"];
+                        model: ["", "Space", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Insert", "Delete", "Home", "End", "PageUp", "PageDown", "PrintScreen", "Pause", "ScrollLock", "Tab", "Escape", "Enter", "Backspace", "NumLock", "Caps", "Up", "Down", "Left", "Right", "Numpad0", "Numpad1", "Numpad2", "Numpad3", "Numpad4", "Numpad5", "Numpad6", "Numpad7", "Numpad8", "Numpad9", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
                         current-value <=> root.item_edit_hotkey_key;
                         horizontal-stretch: 1;
                     }
