@@ -244,8 +244,12 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
     win32_utils::win32::BAR_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
     let hwnd = win32_utils::win32::find_bar_hwnd();
     if !hwnd.is_null() {
+        let previous_foreground = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+        };
         let cfg = load_config();
         let total_h = get_total_bar_height(&cfg);
+        win32_utils::win32::set_desktop_parent(hwnd, cfg.settings.stay_on_top);
 
         if cfg.settings.stay_on_top {
             win32_utils::win32::register_appbar(hwnd, &cfg.settings.bar_position, total_h);
@@ -273,6 +277,9 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
         );
 
         win32_utils::win32::bring_to_foreground(hwnd, cfg.settings.stay_on_top);
+        if previous_foreground != hwnd {
+            win32_utils::win32::restore_foreground_window(previous_foreground);
+        }
 
         // Force le rafraîchissement immédiat de Slint pour repeindre instantanément
         bar.window().request_redraw();
@@ -502,6 +509,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let cfg = cfg_init.lock().unwrap();
                 let total_h = get_total_bar_height(&cfg);
+                win32_utils::win32::set_desktop_parent(hwnd, cfg.settings.stay_on_top);
                 if cfg.settings.stay_on_top {
                     win32_utils::win32::register_appbar(hwnd, &cfg.settings.bar_position, total_h);
                 }
@@ -538,6 +546,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(false, Ordering::SeqCst);
                     let cfg = cfg_retry.lock().unwrap();
                     let total_h = get_total_bar_height(&cfg);
+                    win32_utils::win32::set_desktop_parent(hwnd2, cfg.settings.stay_on_top);
                     if cfg.settings.stay_on_top {
                         win32_utils::win32::register_appbar(hwnd2, &cfg.settings.bar_position, total_h);
                     }
@@ -635,6 +644,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         unsafe { DragFinish(hdrop); }
                     }
+                    WM_TIMER => {
+                        if wparam == win32_utils::win32::VISIBILITY_TIMER_ID {
+                            let bar_hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst)
+                                as HWND;
+                            if win32_utils::win32::STAY_ON_TOP_ENABLED.load(Ordering::SeqCst)
+                                && !win32_utils::win32::BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst)
+                                && !bar_hwnd.is_null()
+                                && unsafe { IsWindowVisible(bar_hwnd) == 0 }
+                            {
+                                unsafe {
+                                    ShowWindow(bar_hwnd, SW_SHOWNOACTIVATE);
+                                    SetWindowPos(
+                                        bar_hwnd,
+                                        HWND_TOP,
+                                        0,
+                                        0,
+                                        0,
+                                        0,
+                                        SWP_NOMOVE
+                                            | SWP_NOSIZE
+                                            | SWP_NOACTIVATE
+                                            | SWP_SHOWWINDOW,
+                                    );
+                                }
+                                win32_utils::win32::BAR_WINDOW_VISIBLE
+                                    .store(true, Ordering::SeqCst);
+                            }
+                        }
+                    }
                     _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
                 }
                 0
@@ -675,6 +713,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 win32_utils::win32::SYSTRAY_HWND.store(msg_hwnd as usize, Ordering::SeqCst);
                 win32_utils::win32::create_tray_icon(msg_hwnd, "⚡ Lanceur d'Applications");
+                SetTimer(msg_hwnd, win32_utils::win32::VISIBILITY_TIMER_ID, 50, None);
 
                 // Enregistrer tous les raccourcis configurés
                 {
@@ -905,6 +944,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if !hwnd.is_null() {
                     let cfg = app_cfg_clone.lock().unwrap();
                     let total_h = get_total_bar_height(&cfg);
+                    win32_utils::win32::set_desktop_parent(hwnd, cfg.settings.stay_on_top);
                     win32_utils::win32::position_bar_window(
                         hwnd,
                         &cfg.settings.bar_position,

@@ -25,6 +25,7 @@ pub mod win32 {
     pub static STAY_ON_TOP_ENABLED: AtomicBool = AtomicBool::new(false);
     pub static BAR_EXPLICITLY_HIDDEN: AtomicBool = AtomicBool::new(false);
     pub static BAR_WINDOW_VISIBLE: AtomicBool = AtomicBool::new(true);
+    pub static DESKTOP_PARENT: AtomicUsize = AtomicUsize::new(0);
 
     pub const WM_APP_TRAY: u32 = WM_APP + 1;
     pub const WM_APP_HOTKEY: u32 = WM_APP + 2;
@@ -33,6 +34,7 @@ pub mod win32 {
     pub const IDM_AUTOSTART: usize = 1003;
     pub const IDM_QUIT: usize = 1004;
     pub const MAIN_HOTKEY_ID: i32 = 9001;
+    pub const VISIBILITY_TIMER_ID: usize = 1;
 
     pub fn to_wide_null(s: &str) -> Vec<u16> {
         OsStr::new(s).encode_wide().chain(Some(0)).collect()
@@ -114,45 +116,28 @@ pub mod win32 {
                 }
             }
             WM_WINDOWPOSCHANGING => {
-                // Intercepte les tentatives du Shell de masquer le bandeau lors d'un Win+D
-                let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
-                if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !is_explicit && lparam != 0 {
-                    let pos_ptr = lparam as *mut WINDOWPOS;
-                    if !pos_ptr.is_null() {
-                        let pos = unsafe { &mut *pos_ptr };
-                        if (pos.flags & SWP_HIDEWINDOW) != 0 {
-                            pos.flags &= !SWP_HIDEWINDOW;
-                            pos.flags |= SWP_SHOWWINDOW;
-                        }
-                    }
-                }
+                // Windows+D masque temporairement les fenêtres top-level.
+                // WM_SHOWWINDOW programme leur réaffichage non-activant.
             }
-            WM_WINDOWPOSCHANGED => {
-                let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
-                if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !is_explicit {
+            WM_TIMER => {
+                if wparam == VISIBILITY_TIMER_ID {
                     unsafe {
-                        if IsIconic(hwnd) != 0 {
-                            ShowWindow(hwnd, SW_RESTORE);
+                        if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst)
+                            && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst)
+                            && IsWindowVisible(hwnd) == 0
+                        {
+                            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                            BAR_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
                         }
                     }
-                }
-            }
-            WM_SIZE => {
-                let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
-                if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !is_explicit && wparam == SIZE_MINIMIZED as usize {
-                    unsafe { ShowWindow(hwnd, SW_RESTORE); }
                     return 0;
                 }
             }
             WM_SHOWWINDOW => {
-                let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
-                if wparam == 0 && (!STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) || is_explicit) {
+                if wparam == 0 {
                     BAR_WINDOW_VISIBLE.store(false, Ordering::SeqCst);
                 } else if wparam != 0 {
                     BAR_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
-                }
-                if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !is_explicit && wparam == 0 {
-                    return 0;
                 }
             }
             _ => {}
@@ -178,8 +163,6 @@ pub mod win32 {
             let mut ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
             ex_style |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
             ex_style &= !WS_EX_APPWINDOW;
-            // La persistance Win+D ne doit pas rendre la barre topmost :
-            // l'AppBar réserve sa zone sans recouvrir les fenêtres normales.
             ex_style &= !WS_EX_TOPMOST;
             SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style as i32);
 
@@ -191,12 +174,13 @@ pub mod win32 {
             } else {
                 style &= !WS_THICKFRAME;
             }
-            style |= WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+            style |= WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+            style |= WS_POPUP;
             SetWindowLongW(hwnd, GWL_STYLE, style as i32);
 
             SetWindowPos(
                 hwnd,
-                HWND_NOTOPMOST,
+                HWND_TOP,
                 0,
                 0,
                 0,
@@ -214,6 +198,39 @@ pub mod win32 {
         }
     }
 
+    unsafe extern "system" fn find_workerw_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let shell_view = unsafe {
+            FindWindowExW(
+                hwnd,
+                std::ptr::null_mut(),
+                to_wide_null("SHELLDLL_DefView").as_ptr(),
+                std::ptr::null(),
+            )
+        };
+        if !shell_view.is_null() {
+            let workerw = unsafe {
+                FindWindowExW(
+                    std::ptr::null_mut(),
+                    hwnd,
+                    to_wide_null("WorkerW").as_ptr(),
+                    std::ptr::null(),
+                )
+            };
+            if !workerw.is_null() {
+                unsafe {
+                    *(lparam as *mut HWND) = workerw;
+                }
+                return 0;
+            }
+        }
+        1
+    }
+
+    pub fn set_desktop_parent(hwnd: HWND, enabled: bool) {
+        let _ = (hwnd, enabled);
+        DESKTOP_PARENT.store(0, Ordering::SeqCst);
+    }
+
     /// Amène la fenêtre au premier plan absolu au-dessus de toutes les fenêtres ouvertes
     pub fn bring_to_foreground(hwnd: HWND, stay_on_top: bool) {
         if hwnd.is_null() {
@@ -225,6 +242,26 @@ pub mod win32 {
         }
     }
 
+    pub fn restore_foreground_window(hwnd: HWND) {
+        if hwnd.is_null() || unsafe { IsWindow(hwnd) == 0 } {
+            return;
+        }
+        unsafe {
+            let target_thread = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+            let current_thread = GetCurrentThreadId();
+            let attached = target_thread != 0
+                && target_thread != current_thread
+                && AttachThreadInput(current_thread, target_thread, 1) != 0;
+
+            SetForegroundWindow(hwnd);
+            SetActiveWindow(hwnd);
+
+            if attached {
+                AttachThreadInput(current_thread, target_thread, 0);
+            }
+        }
+    }
+
     /// Compatibilité API : l'affichage du bandeau ne doit jamais prendre le focus.
     pub fn focus_bar_window(hwnd: HWND) {
         if hwnd.is_null() {
@@ -233,46 +270,10 @@ pub mod win32 {
         unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE); }
     }
 
-    /// Enregistre la barre auprès de Windows (AppBar) pour réserver l'espace à l'écran
+    /// Compatibilité conservée pour les anciens appels. La barre ne doit pas
+    /// réserver l'espace de travail Windows.
     pub fn register_appbar(hwnd: HWND, position: &str, bar_h: i32) {
-        if hwnd.is_null() || position == "Floating" {
-            return;
-        }
-        unsafe {
-            use windows_sys::Win32::UI::Shell::*;
-            let mut abd = APPBARDATA {
-                cbSize: std::mem::size_of::<APPBARDATA>() as u32,
-                hWnd: hwnd,
-                uCallbackMessage: WM_APP + 3,
-                uEdge: if position == "Bottom" { ABE_BOTTOM } else { ABE_TOP },
-                rc: RECT { left: 0, top: 0, right: 0, bottom: 0 },
-                lParam: 0,
-            };
-
-            SHAppBarMessage(ABM_NEW, &mut abd);
-
-            let (screen_w, screen_h) = (
-                GetSystemMetrics(SM_CXSCREEN),
-                GetSystemMetrics(SM_CYSCREEN),
-            );
-
-            let safe_bar_h = bar_h.min(screen_h);
-
-            if position == "Bottom" {
-                abd.rc.left = 0;
-                abd.rc.right = screen_w;
-                abd.rc.top = screen_h - safe_bar_h;
-                abd.rc.bottom = screen_h;
-            } else {
-                abd.rc.left = 0;
-                abd.rc.right = screen_w;
-                abd.rc.top = 0;
-                abd.rc.bottom = safe_bar_h;
-            }
-
-            SHAppBarMessage(ABM_QUERYPOS, &mut abd);
-            SHAppBarMessage(ABM_SETPOS, &mut abd);
-        }
+        let _ = (hwnd, position, bar_h);
     }
 
     /// Retire l'enregistrement AppBar auprès de Windows
@@ -281,15 +282,9 @@ pub mod win32 {
             return;
         }
         unsafe {
-            use windows_sys::Win32::UI::Shell::*;
-            let mut abd = APPBARDATA {
-                cbSize: std::mem::size_of::<APPBARDATA>() as u32,
-                hWnd: hwnd,
-                uCallbackMessage: 0,
-                uEdge: 0,
-                rc: RECT { left: 0, top: 0, right: 0, bottom: 0 },
-                lParam: 0,
-            };
+            let mut abd: APPBARDATA = std::mem::zeroed();
+            abd.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
+            abd.hWnd = hwnd;
             SHAppBarMessage(ABM_REMOVE, &mut abd);
         }
     }
@@ -377,14 +372,7 @@ pub mod win32 {
         if hwnd.is_null() {
             return;
         }
-        let (work_x, mut work_y, work_w, mut work_h) = get_work_area();
-        // L'AppBar a déjà retiré sa hauteur de la zone de travail.
-        if stay_on_top && position == "Top" {
-            work_y -= bar_h;
-            work_h += bar_h;
-        } else if stay_on_top && position == "Bottom" {
-            work_h += bar_h;
-        }
+        let (work_x, work_y, work_w, work_h) = get_work_area();
         let current_h = if is_expanded { (bar_h + 240).min(work_h) } else { bar_h.min(work_h) };
 
         let (x, y, w, h) = match position {

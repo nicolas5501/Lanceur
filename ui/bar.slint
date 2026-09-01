@@ -143,22 +143,19 @@ export component BarWindow inherits Window {
             bar_bg_touch := TouchArea {
                 pointer-event(event) => {
                     if event.kind == PointerEventKind.move {
+                        if root.bar_position == "Floating" && self.pressed {
+                            root.window_dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                        }
                         if root.active_dropdown_idx >= 0 {
                             root.active_dropdown_idx = -1;
                             root.dropdown_state_changed(false);
                         }
+                    } else if event.kind == PointerEventKind.down {
+                        if root.bar_position == "Floating" {
+                            root.window_drag_started();
+                        }
                     } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
                         root.open_context_menu();
-                    }
-                }
-                pressed => {
-                    if root.bar_position == "Floating" {
-                        root.window_drag_started();
-                    }
-                }
-                moved => {
-                    if root.bar_position == "Floating" {
-                        root.window_dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
                     }
                 }
             }
