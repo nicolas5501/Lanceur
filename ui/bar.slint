@@ -122,6 +122,8 @@ export component BarWindow inherits Window {
     callback open_context_menu();
     callback dropdown_state_changed(bool);
     callback container_width_changed(int, length);
+    callback window_drag_started();
+    callback window_dragged(length, length);
 
     VerticalLayout {
         alignment: root.bar_position == "Bottom" ? end : start;
@@ -147,6 +149,16 @@ export component BarWindow inherits Window {
                         }
                     } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
                         root.open_context_menu();
+                    }
+                }
+                pressed => {
+                    if root.bar_position == "Floating" {
+                        root.window_drag_started();
+                    }
+                }
+                moved => {
+                    if root.bar_position == "Floating" {
+                        root.window_dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
                     }
                 }
             }

@@ -215,6 +215,7 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
 #[cfg(windows)]
 fn hide_bar_window() {
     win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(true, Ordering::SeqCst);
+    win32_utils::win32::BAR_WINDOW_VISIBLE.store(false, Ordering::SeqCst);
     let hwnd = win32_utils::win32::find_bar_hwnd();
     if !hwnd.is_null() {
         win32_utils::win32::unregister_appbar(hwnd);
@@ -240,6 +241,7 @@ fn hide_bar_window() {}
 #[cfg(windows)]
 fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
     win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(false, Ordering::SeqCst);
+    win32_utils::win32::BAR_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
     let hwnd = win32_utils::win32::find_bar_hwnd();
     if !hwnd.is_null() {
         let cfg = load_config();
@@ -252,7 +254,11 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
         }
 
         // Applique les styles et synchronise le mode stay_on_top
-        win32_utils::win32::setup_bar_window_styles(hwnd, cfg.settings.stay_on_top);
+        win32_utils::win32::setup_bar_window_styles(
+            hwnd,
+            cfg.settings.stay_on_top,
+            cfg.settings.bar_position == "Floating",
+        );
 
         // Repositionne à l'écran (Top/Bottom/Floating) sans voler le focus
         win32_utils::win32::position_bar_window(
@@ -267,7 +273,6 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
         );
 
         win32_utils::win32::bring_to_foreground(hwnd, cfg.settings.stay_on_top);
-        win32_utils::win32::focus_bar_window(hwnd);
 
         // Force le rafraîchissement immédiat de Slint pour repeindre instantanément
         bar.window().request_redraw();
@@ -479,6 +484,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         refresh_bar_ui(&bar_window, &cfg);
     }
 
+    // La fenêtre est initialement rendue hors écran puis masquée par déplacement,
+    // afin de ne pas interrompre la boucle d'événements Slint.
     let _ = bar_window.show();
 
     // Timer d'initialisation Win32 : se déclenche sur le premier tick de l'event loop,
@@ -498,7 +505,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if cfg.settings.stay_on_top {
                     win32_utils::win32::register_appbar(hwnd, &cfg.settings.bar_position, total_h);
                 }
-                win32_utils::win32::setup_bar_window_styles(hwnd, cfg.settings.stay_on_top);
+                win32_utils::win32::setup_bar_window_styles(
+                    hwnd,
+                    cfg.settings.stay_on_top,
+                    cfg.settings.bar_position == "Floating",
+                );
 
                 // Positionner au top pleine largeur et afficher sans voler le focus
                 win32_utils::win32::position_bar_window(
@@ -530,7 +541,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if cfg.settings.stay_on_top {
                         win32_utils::win32::register_appbar(hwnd2, &cfg.settings.bar_position, total_h);
                     }
-                    win32_utils::win32::setup_bar_window_styles(hwnd2, cfg.settings.stay_on_top);
+                    win32_utils::win32::setup_bar_window_styles(
+                        hwnd2,
+                        cfg.settings.stay_on_top,
+                        cfg.settings.bar_position == "Floating",
+                    );
                     win32_utils::win32::position_bar_window(
                         hwnd2,
                         &cfg.settings.bar_position,
@@ -676,7 +691,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let is_vis = is_vis_for_toggle.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = bw.upgrade() {
-                            let curr = is_vis.load(Ordering::SeqCst);
+                            let curr = win32_utils::win32::BAR_WINDOW_VISIBLE.load(Ordering::SeqCst);
                             if curr {
                                 hide_bar_window();
                                 is_vis.store(false, Ordering::SeqCst);
@@ -707,7 +722,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let is_vis = is_vis_for_cmd.clone();
                             let _ = slint::invoke_from_event_loop(move || {
                                 if let Some(ui) = bw.upgrade() {
-                                    let curr = is_vis.load(Ordering::SeqCst);
+                                    let curr = win32_utils::win32::BAR_WINDOW_VISIBLE.load(Ordering::SeqCst);
                                     if curr {
                                         hide_bar_window();
                                         is_vis.store(false, Ordering::SeqCst);
@@ -781,7 +796,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let is_vis = is_vis_for_hk.clone();
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = bw.upgrade() {
-                                let curr = is_vis.load(Ordering::SeqCst);
+                                let curr = win32_utils::win32::BAR_WINDOW_VISIBLE.load(Ordering::SeqCst);
                                 if curr {
                                     hide_bar_window();
                                     is_vis.store(false, Ordering::SeqCst);
@@ -901,6 +916,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         cfg.settings.stay_on_top,
                     );
                 }
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        let drag_origin = Arc::new(Mutex::new(None::<(i32, i32)>));
+        let drag_origin_start = drag_origin.clone();
+        bar_window.on_window_drag_started(move || {
+            use windows_sys::Win32::Foundation::{HWND, RECT};
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+            let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
+            if !hwnd.is_null() {
+                let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                unsafe {
+                    if GetWindowRect(hwnd, &mut rect) != 0 {
+                        *drag_origin_start.lock().unwrap() = Some((rect.left, rect.top));
+                    }
+                }
+            }
+        });
+
+        let drag_origin_move = drag_origin.clone();
+        let drag_config = app_config.clone();
+        bar_window.on_window_dragged(move |dx, dy| {
+            let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst)
+                as windows_sys::Win32::Foundation::HWND;
+            if let Some((x, y)) = *drag_origin_move.lock().unwrap() {
+                let new_x = x + dx as i32;
+                let new_y = y + dy as i32;
+                win32_utils::win32::move_bar_window_to(hwnd, new_x, new_y);
+                let mut cfg = drag_config.lock().unwrap();
+                cfg.settings.bar_x = new_x;
+                cfg.settings.bar_y = new_y;
+                save_config(&cfg);
             }
         });
     }
@@ -1464,7 +1514,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             win32_utils::win32::unregister_appbar(hwnd);
                         }
-                        win32_utils::win32::setup_bar_window_styles(hwnd, cfg.settings.stay_on_top);
+                        win32_utils::win32::setup_bar_window_styles(
+                            hwnd,
+                            cfg.settings.stay_on_top,
+                            cfg.settings.bar_position == "Floating",
+                        );
                         win32_utils::win32::position_bar_window(
                             hwnd,
                             &cfg.settings.bar_position,
