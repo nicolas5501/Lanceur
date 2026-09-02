@@ -185,6 +185,9 @@ export component BarWindow inherits Window {
     in property <[BarRowData]> rows_list: [];
     in property <int> rows_count: 1;
     in-out property <int> active_dropdown_idx: -1;
+    in-out property <length> active_dropdown_x: 0px;
+    in-out property <length> active_dropdown_y: 0px;
+    in-out property <length> active_dropdown_w: 120px;
 
     callback launch_item(string);
     callback open_settings();
@@ -194,6 +197,18 @@ export component BarWindow inherits Window {
     callback window_drag_started();
     callback window_dragged(length, length);
     callback window_width_changed(length);
+
+    // Zone tactile globale en arrière-plan pour fermer le menu déroulant lors du survol de l'espace transparent
+    if root.active_dropdown_idx >= 0 : dismiss_touch := TouchArea {
+        width: 100%;
+        height: 100%;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.move && root.active_dropdown_idx >= 0 {
+                root.active_dropdown_idx = -1;
+                root.dropdown_state_changed(false);
+            }
+        }
+    }
 
     VerticalLayout {
         alignment: root.bar_position == "Bottom" ? end : start;
@@ -215,6 +230,9 @@ export component BarWindow inherits Window {
                     if event.kind == PointerEventKind.move {
                         if root.bar_position == "Floating" && self.pressed {
                             root.window_dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                        } else if !self.pressed && root.active_dropdown_idx >= 0 {
+                            root.active_dropdown_idx = -1;
+                            root.dropdown_state_changed(false);
                         }
                     } else if event.kind == PointerEventKind.down {
                         if root.bar_position == "Floating" {
@@ -267,11 +285,20 @@ export component BarWindow inherits Window {
                             }
                         }
 
-                        // Liste Horizontale des Conteneurs de cette ligne (SANS dropdowns)
+                        // Liste Horizontale des Conteneurs de cette ligne (SANS dropdowns pour préserver le Z-Order)
                         for cont[c_idx] in row_data.containers : cont_wrapper := Rectangle {
                             width: cont.width_val > 0px ? cont.width_val : cont_layout.min-width;
                             height: parent.height;
                             clip: false;
+
+                            property <bool> is_active: root.active_dropdown_idx == cont.flat_idx;
+                            changed is_active => {
+                                if self.is_active {
+                                    root.active_dropdown_x = cont_wrapper.x;
+                                    root.active_dropdown_y = row_rect.y;
+                                    root.active_dropdown_w = cont_wrapper.width;
+                                }
+                            }
 
                             // Bouton Conteneur pleine hauteur avec couleurs personnalisables
                             cont_pill := Rectangle {
@@ -320,12 +347,12 @@ export component BarWindow inherits Window {
                                     mouse-cursor: pointer;
                                     pointer-event(event) => {
                                         if event.kind == PointerEventKind.move && self.has-hover {
-                                            // N'ouvre/change le dropdown que si c'est le sien ou s'il n'y en a pas d'actif
-                                            if root.active_dropdown_idx == -1 || root.active_dropdown_idx == cont.flat_idx {
-                                                if root.active_dropdown_idx != cont.flat_idx {
-                                                    root.active_dropdown_idx = cont.flat_idx;
-                                                    root.dropdown_state_changed(true);
-                                                }
+                                            if root.active_dropdown_idx != cont.flat_idx {
+                                                root.active_dropdown_idx = cont.flat_idx;
+                                                root.active_dropdown_x = cont_wrapper.x;
+                                                root.active_dropdown_y = row_rect.y;
+                                                root.active_dropdown_w = cont_wrapper.width;
+                                                root.dropdown_state_changed(true);
                                             }
                                         } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
                                             root.open_context_menu();
@@ -348,48 +375,59 @@ export component BarWindow inherits Window {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
 
-                            // Le Menu Déroulant rattaché DIRECTEMENT
-                            if root.active_dropdown_idx == cont.flat_idx : dropdown_popover := Rectangle {
-                                x: 0px;
-                                height: max(32px, (cont.items.length * (root.item_h + 2px)) + 8px);
-                                y: root.bar_position == "Bottom" ? -self.height : parent.height;
-                                width: max(cont_pill.width, max(190px, dropdown_layout.min-width + 16px));
-                                background: root.bar_bg_color.with-alpha(1.0);
-                                border-radius: 4px;
-                                border-width: 1px;
-                                border-color: #3b82f6cc;
-                                drop-shadow-blur: 10px;
-                                drop-shadow-color: #000000aa;
+            // Overlay du Menu Déroulant rattaché en couche supérieure (Z-Order au-dessus de toutes les lignes)
+            for row_data in root.rows_list : Rectangle {
+                width: 100%;
+                height: 100%;
+                clip: false;
 
-                                dropdown_layout := VerticalLayout {
-                                    padding: 4px;
-                                    spacing: 2px;
+                for cont in row_data.containers : Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    clip: false;
+                    if root.active_dropdown_idx == cont.flat_idx : dropdown_popover := Rectangle {
+                        x: max(2px, min(parent.width - self.width - 2px, root.active_dropdown_x));
+                        height: max(32px, (cont.items.length * (root.item_h + 2px)) + 8px);
+                        y: root.bar_position == "Bottom" ? (root.active_dropdown_y - self.height) : (root.active_dropdown_y + root.bar_h);
+                        width: max(root.active_dropdown_w, max(190px, dropdown_layout.min-width + 16px));
+                        background: root.bar_bg_color.with-alpha(1.0);
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: #3b82f6cc;
+                        drop-shadow-blur: 10px;
+                        drop-shadow-color: #000000aa;
 
-                                    if cont.items.length == 0 : Rectangle {
-                                        height: 26px;
-                                        Text { text: "Aucun item."; color: #64748b; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
-                                    }
+                        dropdown_layout := VerticalLayout {
+                            padding: 4px;
+                            spacing: 2px;
 
-                                    for itm in cont.items : DropdownItemRow {
-                                        item_name: itm.name;
-                                        icon_type: itm.icon_type;
-                                        icon_emoji: itm.icon_emoji;
-                                        icon_image: itm.icon_image;
-                                        hotkey_display: itm.hotkey_display;
-                                        item_h: root.item_h;
-                                        font_sz: root.item_font_sz;
-                                        custom_bg: itm.bg_color;
-                                        custom_text: itm.text_color;
-                                        hover_color: root.dropdown_hover_color;
-                                        hover_style: root.dropdown_hover_style;
-                                        wave_cycle: root.anim_pulse;
-                                        clicked => {
-                                            root.active_dropdown_idx = -1;
-                                            root.dropdown_state_changed(false);
-                                            root.launch_item(itm.target);
-                                        }
-                                    }
+                            if cont.items.length == 0 : Rectangle {
+                                height: 26px;
+                                Text { text: "Aucun item."; color: #64748b; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+
+                            for itm in cont.items : DropdownItemRow {
+                                item_name: itm.name;
+                                icon_type: itm.icon_type;
+                                icon_emoji: itm.icon_emoji;
+                                icon_image: itm.icon_image;
+                                hotkey_display: itm.hotkey_display;
+                                item_h: root.item_h;
+                                font_sz: root.item_font_sz;
+                                custom_bg: itm.bg_color;
+                                custom_text: itm.text_color;
+                                hover_color: root.dropdown_hover_color;
+                                hover_style: root.dropdown_hover_style;
+                                wave_cycle: root.anim_pulse;
+                                clicked => {
+                                    root.active_dropdown_idx = -1;
+                                    root.dropdown_state_changed(false);
+                                    root.launch_item(itm.target);
                                 }
                             }
                         }

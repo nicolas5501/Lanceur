@@ -254,6 +254,12 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
         };
         let cfg = load_config();
         let total_h = get_total_bar_height(&cfg);
+
+        refresh_bar_ui(bar, &cfg);
+        if !is_expanded {
+            bar.set_active_dropdown_idx(-1);
+        }
+
         win32_utils::win32::set_desktop_parent(hwnd, cfg.settings.stay_on_top);
 
         // Applique les styles et synchronise le mode bureau persistant
@@ -289,7 +295,12 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
 }
 
 #[cfg(not(windows))]
-fn show_bar_window(bar: &BarWindow, _is_expanded: bool) {
+fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
+    let cfg = load_config();
+    refresh_bar_ui(bar, &cfg);
+    if !is_expanded {
+        bar.set_active_dropdown_idx(-1);
+    }
     bar.window().request_redraw();
 }
 
@@ -1126,29 +1137,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         });
+    }
 
-        let dropdown_config = app_config.clone();
-        bar_window.on_dropdown_state_changed(move |is_expanded| {
-            #[cfg(windows)]
-            {
-                use windows_sys::Win32::Foundation::HWND;
-                let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
-                if !hwnd.is_null() {
-                    let cfg = dropdown_config.lock().unwrap();
-                    let total_h = get_total_bar_height(&cfg);
-                    win32_utils::win32::position_bar_window(
-                        hwnd,
-                        &cfg.settings.bar_position,
-                        total_h,
-                        cfg.settings.bar_x,
-                        cfg.settings.bar_y,
-                        cfg.settings.bar_width,
-                        is_expanded,
-                        cfg.settings.stay_on_top,
-                    );
+    // ================= SURVEILLANCE DU CURSEUR (FERMETURE AUTOMATIQUE SI SORTIE DE LA FENETRE) =================
+    {
+        let bw = bar_window.as_weak();
+        let mouse_cfg = app_config.clone();
+        let mouse_timer = slint::Timer::default();
+        mouse_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(50), move || {
+            if let Some(bui) = bw.upgrade() {
+                if bui.get_active_dropdown_idx() >= 0 {
+                    #[cfg(windows)]
+                    {
+                        use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetWindowRect};
+                        let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
+                        if !hwnd.is_null() {
+                            let mut pt = POINT { x: 0, y: 0 };
+                            let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                            unsafe {
+                                if GetCursorPos(&mut pt) != 0 && GetWindowRect(hwnd, &mut rect) != 0 {
+                                    if pt.x < rect.left || pt.x >= rect.right || pt.y < rect.top || pt.y >= rect.bottom {
+                                        bui.set_active_dropdown_idx(-1);
+                                        let cfg = mouse_cfg.lock().unwrap();
+                                        let total_h = get_total_bar_height(&cfg);
+                                        win32_utils::win32::position_bar_window(
+                                            hwnd,
+                                            &cfg.settings.bar_position,
+                                            total_h,
+                                            cfg.settings.bar_x,
+                                            cfg.settings.bar_y,
+                                            cfg.settings.bar_width,
+                                            false,
+                                            cfg.settings.stay_on_top,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         });
+        std::mem::forget(mouse_timer);
     }
 
     // Redimensionnement de conteneur à la souris

@@ -436,6 +436,14 @@ pub mod win32 {
             if attached {
                 AttachThreadInput(current_thread, target_thread, 0);
             }
+
+            if _stay_on_top {
+                let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
+                if !progman.is_null() {
+                    SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
+                    DESKTOP_PARENT.store(progman as usize, Ordering::SeqCst);
+                }
+            }
         }
     }
 
