@@ -35,8 +35,11 @@ pub struct AppSettings {
     pub bar_x: i32,
     pub bar_y: i32,
     pub bar_width: i32,
+    #[serde(default = "default_rows_count")]
+    pub rows_count: usize,
 }
 
+fn default_rows_count() -> usize { 1 }
 fn default_alignment() -> String { "Left".to_string() }
 fn default_bar_bg() -> String { "#0f172af8".to_string() }
 fn default_bar_text() -> String { "#f8fafc".to_string() }
@@ -63,6 +66,7 @@ impl Default for AppSettings {
             bar_x: 0,
             bar_y: 0,
             bar_width: 0,
+            rows_count: 1,
         }
     }
 }

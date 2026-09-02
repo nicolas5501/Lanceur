@@ -20,7 +20,15 @@ fn trim_process_memory() {}
 
 fn parse_hex_color(hex_str: &str, default: Color) -> Color {
     let s = hex_str.trim().trim_start_matches('#');
-    if s.len() == 6 {
+    if s.len() == 3 {
+        if let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(&s[0..1], 16),
+            u8::from_str_radix(&s[1..2], 16),
+            u8::from_str_radix(&s[2..3], 16),
+        ) {
+            return Color::from_argb_u8(255, r * 17, g * 17, b * 17);
+        }
+    } else if s.len() == 6 {
         if let Ok(val) = u32::from_str_radix(s, 16) {
             let r = ((val >> 16) & 0xFF) as u8;
             let g = ((val >> 8) & 0xFF) as u8;
@@ -59,7 +67,7 @@ fn format_hotkey_display(mods: &[String], key: &str) -> String {
 
 fn get_total_bar_height(cfg: &AppConfig) -> i32 {
     let max_row = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0);
-    let rows_count = (max_row + 1).max(1);
+    let rows_count = (max_row + 1).max(cfg.settings.rows_count).max(1);
     (cfg.settings.bar_height as i32) * (rows_count as i32)
 }
 
@@ -72,13 +80,15 @@ fn get_max_allowed_rows(cfg: &AppConfig) -> usize {
     let bar_h = (cfg.settings.bar_height as i32).max(16);
     let max_by_screen = ((work_h / bar_h) as usize).max(1);
     let max_in_cfg = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0) + 1;
-    max_by_screen.max(max_in_cfg).max(1)
+    let max_explicit = cfg.settings.rows_count;
+    max_by_screen.max(max_in_cfg).max(max_explicit).max(1)
 }
 
 fn build_available_rows_list(cfg: &AppConfig) -> Vec<SharedString> {
-    let max_rows = get_max_allowed_rows(cfg);
-    let mut rows = Vec::with_capacity(max_rows);
-    for r in 0..max_rows {
+    let max_row = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0);
+    let rows_count = (max_row + 1).max(cfg.settings.rows_count).max(1);
+    let mut rows = Vec::with_capacity(rows_count);
+    for r in 0..rows_count {
         if r == 0 {
             rows.push("Ligne 1 (Haut)".into());
         } else {
@@ -86,6 +96,26 @@ fn build_available_rows_list(cfg: &AppConfig) -> Vec<SharedString> {
         }
     }
     rows
+}
+
+fn build_lines_summary_list(cfg: &AppConfig) -> Vec<LineSummaryData> {
+    let max_row = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0);
+    let rows_count = (max_row + 1).max(cfg.settings.rows_count).max(1);
+    let mut lines = Vec::with_capacity(rows_count);
+    for r in 0..rows_count {
+        let name = if r == 0 {
+            "Ligne 1 (Haut)".into()
+        } else {
+            format!("Ligne {}", r + 1).into()
+        };
+        let count = cfg.containers.iter().filter(|c| c.row == r).count() as i32;
+        lines.push(LineSummaryData {
+            index: r as i32,
+            name,
+            containers_count: count,
+        });
+    }
+    lines
 }
 
 fn update_bar_window_geometry(cfg: &AppConfig) {
@@ -135,7 +165,7 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
 
     let cache = cache_dir();
     let max_row = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0);
-    let rows_count = (max_row + 1).max(1);
+    let rows_count = (max_row + 1).max(cfg.settings.rows_count).max(1);
     bar.set_rows_count(rows_count as i32);
 
     let mut rows_data: Vec<BarRowData> = Vec::new();
@@ -309,6 +339,9 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
     let available_rows = build_available_rows_list(cfg);
     settings_win.set_available_rows(ModelRc::new(VecModel::from(available_rows)));
 
+    let lines_summary = build_lines_summary_list(cfg);
+    settings_win.set_lines_list(ModelRc::new(VecModel::from(lines_summary)));
+
     let mut cont_summaries: Vec<ContainerItemSummary> = Vec::new();
     let mut cont_names: Vec<SharedString> = Vec::new();
 
@@ -346,6 +379,10 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
         settings_win.set_edit_container_display_mode(cont.display_mode.clone().into());
         settings_win.set_edit_container_bg(cont.bg_color.clone().into());
         settings_win.set_edit_container_text(cont.text_color.clone().into());
+        let c_bg_col = parse_hex_color(&cont.bg_color, Color::from_argb_u8(255, 30, 41, 59));
+        let c_txt_col = parse_hex_color(&cont.text_color, Color::from_argb_u8(255, 248, 250, 252));
+        settings_win.set_edit_container_bg_col(c_bg_col);
+        settings_win.set_edit_container_text_col(c_txt_col);
         settings_win.set_edit_container_row(cont.row as i32);
         settings_win.set_edit_cont_mod_ctrl(cont.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("control") || m.eq_ignore_ascii_case("ctrl")));
         settings_win.set_edit_cont_mod_alt(cont.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("alt")));
@@ -369,6 +406,52 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
             });
         }
         settings_win.set_items_list(ModelRc::new(VecModel::from(items_detail)));
+
+        let current_item_idx = settings_win.get_selected_item_index();
+        let safe_item_idx = if cont.items.is_empty() {
+            -1
+        } else if current_item_idx >= 0 && (current_item_idx as usize) < cont.items.len() {
+            current_item_idx
+        } else {
+            0
+        };
+        settings_win.set_selected_item_index(safe_item_idx);
+
+        if safe_item_idx >= 0 {
+            if let Some(itm) = cont.items.get(safe_item_idx as usize) {
+                settings_win.set_item_edit_name(itm.name.clone().into());
+                settings_win.set_item_edit_target(itm.target.clone().into());
+                settings_win.set_item_edit_icon_type(itm.icon_type.clone().into());
+                settings_win.set_item_edit_icon_value(itm.icon_value.clone().into());
+                settings_win.set_item_edit_bg(itm.bg_color.clone().into());
+                settings_win.set_item_edit_text(itm.text_color.clone().into());
+                let i_bg_col = parse_hex_color(&itm.bg_color, Color::from_argb_u8(255, 30, 41, 59));
+                let i_txt_col = parse_hex_color(&itm.text_color, Color::from_argb_u8(255, 248, 250, 252));
+                settings_win.set_item_edit_bg_col(i_bg_col);
+                settings_win.set_item_edit_text_col(i_txt_col);
+                settings_win.set_item_target_container_idx(safe_idx as i32);
+                settings_win.set_item_edit_mod_ctrl(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("control") || m.eq_ignore_ascii_case("ctrl")));
+                settings_win.set_item_edit_mod_alt(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("alt")));
+                settings_win.set_item_edit_mod_shift(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("shift")));
+                settings_win.set_item_edit_mod_win(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("win") || m.eq_ignore_ascii_case("windows")));
+                settings_win.set_item_edit_hotkey_key(itm.hotkey_key.clone().into());
+            }
+        } else {
+            settings_win.set_item_edit_name("".into());
+            settings_win.set_item_edit_target("".into());
+            settings_win.set_item_edit_icon_type("emoji".into());
+            settings_win.set_item_edit_icon_value("🚀".into());
+            settings_win.set_item_edit_bg("".into());
+            settings_win.set_item_edit_text("".into());
+            settings_win.set_item_edit_bg_col(Color::from_argb_u8(255, 30, 41, 59));
+            settings_win.set_item_edit_text_col(Color::from_argb_u8(255, 248, 250, 252));
+            settings_win.set_item_target_container_idx(safe_idx as i32);
+            settings_win.set_item_edit_mod_ctrl(false);
+            settings_win.set_item_edit_mod_alt(false);
+            settings_win.set_item_edit_mod_shift(false);
+            settings_win.set_item_edit_mod_win(false);
+            settings_win.set_item_edit_hotkey_key("".into());
+        }
     } else {
         settings_win.set_items_list(ModelRc::new(VecModel::from(Vec::<ItemDetailData>::new())));
     }
@@ -382,6 +465,10 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
     settings_win.set_pref_item_font(cfg.settings.item_font_size);
     settings_win.set_pref_bar_bg_color(cfg.settings.bar_bg_color.clone().into());
     settings_win.set_pref_bar_text_color(cfg.settings.bar_text_color.clone().into());
+    let bar_bg_col = parse_hex_color(&cfg.settings.bar_bg_color, Color::from_argb_u8(255, 15, 23, 42));
+    let bar_text_col = parse_hex_color(&cfg.settings.bar_text_color, Color::from_argb_u8(255, 248, 250, 252));
+    settings_win.set_pref_bar_bg_color_val(bar_bg_col);
+    settings_win.set_pref_bar_text_color_val(bar_text_col);
     let hover_col = parse_hex_color(&cfg.settings.dropdown_hover_color, Color::from_argb_u8(255, 37, 99, 235));
     settings_win.set_pref_dropdown_hover_color(cfg.settings.dropdown_hover_color.clone().into());
     settings_win.set_pref_dropdown_hover_color_val(hover_col);
@@ -1261,6 +1348,143 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ================= CALLBACKS DES PARAMÈTRES (SETTINGS WINDOW) =================
+    // 0. Callbacks Lignes
+    {
+        let settings_weak = settings_window.as_weak();
+        settings_window.on_select_line(move |line_idx| {
+            if let Some(sui) = settings_weak.upgrade() {
+                sui.set_selected_line_idx(line_idx);
+            }
+        });
+    }
+
+    {
+        let settings_weak = settings_window.as_weak();
+        let bar_weak = bar_window.as_weak();
+        let cfg_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+
+        settings_window.on_add_line(move || {
+            if let Some(sui) = settings_weak.upgrade() {
+                let mut cfg = cfg_arc.lock().unwrap();
+                let max_row = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0);
+                let current_rows = (max_row + 1).max(cfg.settings.rows_count).max(1);
+                let new_row_count = current_rows + 1;
+                cfg.settings.rows_count = new_row_count;
+                save_config(&cfg);
+                sui.set_selected_line_idx((new_row_count - 1) as i32);
+                let current_sel = sel_idx.load(Ordering::SeqCst);
+                refresh_settings_ui(&sui, &cfg, current_sel);
+                if let Some(bui) = bar_weak.upgrade() {
+                    refresh_bar_ui(&bui, &cfg);
+                }
+                update_bar_window_geometry(&cfg);
+            }
+        });
+    }
+
+    {
+        let settings_weak = settings_window.as_weak();
+        let bar_weak = bar_window.as_weak();
+        let cfg_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+
+        settings_window.on_delete_line(move |line_idx| {
+            let del_row = line_idx as usize;
+            if let Some(sui) = settings_weak.upgrade() {
+                let mut cfg = cfg_arc.lock().unwrap();
+                let max_row = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0);
+                let current_rows = (max_row + 1).max(cfg.settings.rows_count).max(1);
+                if current_rows <= 1 {
+                    return;
+                }
+                let fallback_row = if del_row > 0 { del_row - 1 } else { 0 };
+                for cont in &mut cfg.containers {
+                    if cont.row == del_row {
+                        cont.row = fallback_row;
+                    } else if cont.row > del_row {
+                        cont.row -= 1;
+                    }
+                }
+                cfg.settings.rows_count = current_rows - 1;
+                save_config(&cfg);
+                sui.set_selected_line_idx(fallback_row as i32);
+                let current_sel = sel_idx.load(Ordering::SeqCst);
+                refresh_settings_ui(&sui, &cfg, current_sel);
+                if let Some(bui) = bar_weak.upgrade() {
+                    refresh_bar_ui(&bui, &cfg);
+                }
+                update_bar_window_geometry(&cfg);
+            }
+        });
+    }
+
+    {
+        let settings_weak = settings_window.as_weak();
+        let bar_weak = bar_window.as_weak();
+        let cfg_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+
+        settings_window.on_move_line_up(move |line_idx| {
+            let row = line_idx as usize;
+            if row == 0 {
+                return;
+            }
+            if let Some(sui) = settings_weak.upgrade() {
+                let mut cfg = cfg_arc.lock().unwrap();
+                for cont in &mut cfg.containers {
+                    if cont.row == row {
+                        cont.row = row - 1;
+                    } else if cont.row == row - 1 {
+                        cont.row = row;
+                    }
+                }
+                save_config(&cfg);
+                sui.set_selected_line_idx((row - 1) as i32);
+                let current_sel = sel_idx.load(Ordering::SeqCst);
+                refresh_settings_ui(&sui, &cfg, current_sel);
+                if let Some(bui) = bar_weak.upgrade() {
+                    refresh_bar_ui(&bui, &cfg);
+                }
+                update_bar_window_geometry(&cfg);
+            }
+        });
+    }
+
+    {
+        let settings_weak = settings_window.as_weak();
+        let bar_weak = bar_window.as_weak();
+        let cfg_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+
+        settings_window.on_move_line_down(move |line_idx| {
+            let row = line_idx as usize;
+            if let Some(sui) = settings_weak.upgrade() {
+                let mut cfg = cfg_arc.lock().unwrap();
+                let max_row = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0);
+                let current_rows = (max_row + 1).max(cfg.settings.rows_count).max(1);
+                if row + 1 >= current_rows {
+                    return;
+                }
+                for cont in &mut cfg.containers {
+                    if cont.row == row {
+                        cont.row = row + 1;
+                    } else if cont.row == row + 1 {
+                        cont.row = row;
+                    }
+                }
+                save_config(&cfg);
+                sui.set_selected_line_idx((row + 1) as i32);
+                let current_sel = sel_idx.load(Ordering::SeqCst);
+                refresh_settings_ui(&sui, &cfg, current_sel);
+                if let Some(bui) = bar_weak.upgrade() {
+                    refresh_bar_ui(&bui, &cfg);
+                }
+                update_bar_window_geometry(&cfg);
+            }
+        });
+    }
+
     // 1. Sélection d'un conteneur
     {
         let settings_weak = settings_window.as_weak();
@@ -1286,10 +1510,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings_window.on_add_container(move || {
             if let Some(sui) = settings_weak.upgrade() {
                 let mut cfg = cfg_arc.lock().unwrap();
+                let sel_line = sui.get_selected_line_idx();
+                let target_row = if sel_line >= 0 { sel_line as usize } else { 0 };
                 let new_cont = ContainerConfig {
                     id: generate_id(),
                     name: format!("Nouveau {}", cfg.containers.len() + 1),
-                    icon: "📁".to_string(),
+                    icon: "📦".to_string(),
                     width: 0.0,
                     order: cfg.containers.len(),
                     display_mode: "Both".to_string(),
@@ -1297,7 +1523,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     text_color: "".to_string(),
                     hotkey_modifiers: Vec::new(),
                     hotkey_key: String::new(),
-                    row: 0,
+                    row: target_row,
                     items: Vec::new(),
                 };
                 cfg.containers.push(new_cont);
@@ -1453,12 +1679,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sui.set_item_edit_icon_value("🚀".into());
                 sui.set_item_edit_bg("".into());
                 sui.set_item_edit_text("".into());
+                sui.set_item_edit_bg_col(Color::from_argb_u8(255, 30, 41, 59));
+                sui.set_item_edit_text_col(Color::from_argb_u8(255, 248, 250, 252));
                 sui.set_item_edit_mod_ctrl(false);
                 sui.set_item_edit_mod_alt(false);
                 sui.set_item_edit_mod_shift(false);
                 sui.set_item_edit_mod_win(false);
                 sui.set_item_edit_hotkey_key("".into());
-                sui.set_show_item_editor(true);
+                sui.set_show_item_editor(false);
             }
         });
 
@@ -1479,13 +1707,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         sui.set_item_edit_icon_value(itm.icon_value.clone().into());
                         sui.set_item_edit_bg(itm.bg_color.clone().into());
                         sui.set_item_edit_text(itm.text_color.clone().into());
+                        let i_bg = parse_hex_color(&itm.bg_color, Color::from_argb_u8(255, 30, 41, 59));
+                        let i_txt = parse_hex_color(&itm.text_color, Color::from_argb_u8(255, 248, 250, 252));
+                        sui.set_item_edit_bg_col(i_bg);
+                        sui.set_item_edit_text_col(i_txt);
                         sui.set_item_target_container_idx(c_idx as i32);
                         sui.set_item_edit_mod_ctrl(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("control") || m.eq_ignore_ascii_case("ctrl")));
                         sui.set_item_edit_mod_alt(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("alt")));
                         sui.set_item_edit_mod_shift(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("shift")));
                         sui.set_item_edit_mod_win(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("win") || m.eq_ignore_ascii_case("windows")));
                         sui.set_item_edit_hotkey_key(itm.hotkey_key.clone().into());
-                        sui.set_show_item_editor(true);
+                        sui.set_show_item_editor(false);
                     }
                 }
             }
@@ -1576,6 +1808,435 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(bui) = bar_weak.upgrade() {
                             refresh_bar_ui(&bui, &cfg);
                         }
+                    }
+                }
+            }
+        });
+    }
+
+    // 8bis. Callbacks de pipette et de couleur (Conteneurs, Items, Bandeau)
+    {
+        // Conteneur Fond
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+        settings_window.on_pick_container_bg_color(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                let cur = sui.get_edit_container_bg().to_string();
+                if let Some(new_col) = win32_utils::win32::pick_color_dialog(&cur) {
+                    sui.set_edit_container_bg(new_col.clone().into());
+                    let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 30, 41, 59));
+                    sui.set_edit_container_bg_col(col);
+                    let idx = sel_idx.load(Ordering::SeqCst);
+                    let mut cfg = c_arc.lock().unwrap();
+                    if let Some(cont) = cfg.containers.get_mut(idx) {
+                        cont.bg_color = new_col;
+                        save_config(&cfg);
+                        if let Some(bui) = b_weak.upgrade() {
+                            refresh_bar_ui(&bui, &cfg);
+                        }
+                    }
+                }
+            }
+        });
+
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+        settings_window.on_container_bg_text_changed(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                let txt = sui.get_edit_container_bg().to_string();
+                let col = parse_hex_color(&txt, Color::from_argb_u8(255, 30, 41, 59));
+                sui.set_edit_container_bg_col(col);
+                let idx = sel_idx.load(Ordering::SeqCst);
+                let mut cfg = c_arc.lock().unwrap();
+                if let Some(cont) = cfg.containers.get_mut(idx) {
+                    cont.bg_color = txt;
+                    save_config(&cfg);
+                    if let Some(bui) = b_weak.upgrade() {
+                        refresh_bar_ui(&bui, &cfg);
+                    }
+                }
+            }
+        });
+
+        // Conteneur Texte
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+        settings_window.on_pick_container_text_color(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                let cur = sui.get_edit_container_text().to_string();
+                if let Some(new_col) = win32_utils::win32::pick_color_dialog(&cur) {
+                    sui.set_edit_container_text(new_col.clone().into());
+                    let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 248, 250, 252));
+                    sui.set_edit_container_text_col(col);
+                    let idx = sel_idx.load(Ordering::SeqCst);
+                    let mut cfg = c_arc.lock().unwrap();
+                    if let Some(cont) = cfg.containers.get_mut(idx) {
+                        cont.text_color = new_col;
+                        save_config(&cfg);
+                        if let Some(bui) = b_weak.upgrade() {
+                            refresh_bar_ui(&bui, &cfg);
+                        }
+                    }
+                }
+            }
+        });
+
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+        settings_window.on_container_text_changed(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                let txt = sui.get_edit_container_text().to_string();
+                let col = parse_hex_color(&txt, Color::from_argb_u8(255, 248, 250, 252));
+                sui.set_edit_container_text_col(col);
+                let idx = sel_idx.load(Ordering::SeqCst);
+                let mut cfg = c_arc.lock().unwrap();
+                if let Some(cont) = cfg.containers.get_mut(idx) {
+                    cont.text_color = txt;
+                    save_config(&cfg);
+                    if let Some(bui) = b_weak.upgrade() {
+                        refresh_bar_ui(&bui, &cfg);
+                    }
+                }
+            }
+        });
+
+        // Item Fond
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+        settings_window.on_pick_item_bg_color(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                let cur = sui.get_item_edit_bg().to_string();
+                if let Some(new_col) = win32_utils::win32::pick_color_dialog(&cur) {
+                    sui.set_item_edit_bg(new_col.clone().into());
+                    let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 30, 41, 59));
+                    sui.set_item_edit_bg_col(col);
+                    let c_idx = sel_idx.load(Ordering::SeqCst);
+                    let item_idx = sui.get_selected_item_index();
+                    if item_idx >= 0 {
+                        let mut cfg = c_arc.lock().unwrap();
+                        if let Some(cont) = cfg.containers.get_mut(c_idx) {
+                            if let Some(itm) = cont.items.get_mut(item_idx as usize) {
+                                itm.bg_color = new_col;
+                                save_config(&cfg);
+                                if let Some(bui) = b_weak.upgrade() {
+                                    refresh_bar_ui(&bui, &cfg);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+        settings_window.on_item_bg_text_changed(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                let txt = sui.get_item_edit_bg().to_string();
+                let col = parse_hex_color(&txt, Color::from_argb_u8(255, 30, 41, 59));
+                sui.set_item_edit_bg_col(col);
+                let c_idx = sel_idx.load(Ordering::SeqCst);
+                let item_idx = sui.get_selected_item_index();
+                if item_idx >= 0 {
+                    let mut cfg = c_arc.lock().unwrap();
+                    if let Some(cont) = cfg.containers.get_mut(c_idx) {
+                        if let Some(itm) = cont.items.get_mut(item_idx as usize) {
+                            itm.bg_color = txt;
+                            save_config(&cfg);
+                            if let Some(bui) = b_weak.upgrade() {
+                                refresh_bar_ui(&bui, &cfg);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // Item Texte
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+        settings_window.on_pick_item_text_color(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                let cur = sui.get_item_edit_text().to_string();
+                if let Some(new_col) = win32_utils::win32::pick_color_dialog(&cur) {
+                    sui.set_item_edit_text(new_col.clone().into());
+                    let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 248, 250, 252));
+                    sui.set_item_edit_text_col(col);
+                    let c_idx = sel_idx.load(Ordering::SeqCst);
+                    let item_idx = sui.get_selected_item_index();
+                    if item_idx >= 0 {
+                        let mut cfg = c_arc.lock().unwrap();
+                        if let Some(cont) = cfg.containers.get_mut(c_idx) {
+                            if let Some(itm) = cont.items.get_mut(item_idx as usize) {
+                                itm.text_color = new_col;
+                                save_config(&cfg);
+                                if let Some(bui) = b_weak.upgrade() {
+                                    refresh_bar_ui(&bui, &cfg);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+        settings_window.on_item_text_changed(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                let txt = sui.get_item_edit_text().to_string();
+                let col = parse_hex_color(&txt, Color::from_argb_u8(255, 248, 250, 252));
+                sui.set_item_edit_text_col(col);
+                let c_idx = sel_idx.load(Ordering::SeqCst);
+                let item_idx = sui.get_selected_item_index();
+                if item_idx >= 0 {
+                    let mut cfg = c_arc.lock().unwrap();
+                    if let Some(cont) = cfg.containers.get_mut(c_idx) {
+                        if let Some(itm) = cont.items.get_mut(item_idx as usize) {
+                            itm.text_color = txt;
+                            save_config(&cfg);
+                            if let Some(bui) = b_weak.upgrade() {
+                                refresh_bar_ui(&bui, &cfg);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // Bandeau Fond
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        settings_window.on_pick_bar_bg_color(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                let cur = sui.get_pref_bar_bg_color().to_string();
+                if let Some(new_col) = win32_utils::win32::pick_color_dialog(&cur) {
+                    sui.set_pref_bar_bg_color(new_col.clone().into());
+                    let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 15, 23, 42));
+                    sui.set_pref_bar_bg_color_val(col);
+                    let mut cfg = c_arc.lock().unwrap();
+                    cfg.settings.bar_bg_color = new_col;
+                    save_config(&cfg);
+                    if let Some(bui) = b_weak.upgrade() {
+                        refresh_bar_ui(&bui, &cfg);
+                    }
+                }
+            }
+        });
+
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        settings_window.on_bar_bg_text_changed(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                let txt = sui.get_pref_bar_bg_color().to_string();
+                let col = parse_hex_color(&txt, Color::from_argb_u8(255, 15, 23, 42));
+                sui.set_pref_bar_bg_color_val(col);
+                let mut cfg = c_arc.lock().unwrap();
+                cfg.settings.bar_bg_color = txt;
+                save_config(&cfg);
+                if let Some(bui) = b_weak.upgrade() {
+                    refresh_bar_ui(&bui, &cfg);
+                }
+            }
+        });
+
+        // Bandeau Texte
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        settings_window.on_pick_bar_text_color(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                let cur = sui.get_pref_bar_text_color().to_string();
+                if let Some(new_col) = win32_utils::win32::pick_color_dialog(&cur) {
+                    sui.set_pref_bar_text_color(new_col.clone().into());
+                    let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 248, 250, 252));
+                    sui.set_pref_bar_text_color_val(col);
+                    let mut cfg = c_arc.lock().unwrap();
+                    cfg.settings.bar_text_color = new_col;
+                    save_config(&cfg);
+                    if let Some(bui) = b_weak.upgrade() {
+                        refresh_bar_ui(&bui, &cfg);
+                    }
+                }
+            }
+        });
+
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        settings_window.on_bar_text_text_changed(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                let txt = sui.get_pref_bar_text_color().to_string();
+                let col = parse_hex_color(&txt, Color::from_argb_u8(255, 248, 250, 252));
+                sui.set_pref_bar_text_color_val(col);
+                let mut cfg = c_arc.lock().unwrap();
+                cfg.settings.bar_text_color = txt;
+                save_config(&cfg);
+                if let Some(bui) = b_weak.upgrade() {
+                    refresh_bar_ui(&bui, &cfg);
+                }
+            }
+        });
+
+        // Pipette d'écran (Eyedropper) Conteneur Fond
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+        settings_window.on_eyedropper_container_bg(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                if let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
+                    sui.set_edit_container_bg(new_col.clone().into());
+                    let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 30, 41, 59));
+                    sui.set_edit_container_bg_col(col);
+                    let idx = sel_idx.load(Ordering::SeqCst);
+                    let mut cfg = c_arc.lock().unwrap();
+                    if let Some(cont) = cfg.containers.get_mut(idx) {
+                        cont.bg_color = new_col;
+                        save_config(&cfg);
+                        if let Some(bui) = b_weak.upgrade() {
+                            refresh_bar_ui(&bui, &cfg);
+                        }
+                    }
+                }
+            }
+        });
+
+        // Pipette d'écran (Eyedropper) Conteneur Texte
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+        settings_window.on_eyedropper_container_text(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                if let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
+                    sui.set_edit_container_text(new_col.clone().into());
+                    let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 248, 250, 252));
+                    sui.set_edit_container_text_col(col);
+                    let idx = sel_idx.load(Ordering::SeqCst);
+                    let mut cfg = c_arc.lock().unwrap();
+                    if let Some(cont) = cfg.containers.get_mut(idx) {
+                        cont.text_color = new_col;
+                        save_config(&cfg);
+                        if let Some(bui) = b_weak.upgrade() {
+                            refresh_bar_ui(&bui, &cfg);
+                        }
+                    }
+                }
+            }
+        });
+
+        // Pipette d'écran (Eyedropper) Item Fond
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+        settings_window.on_eyedropper_item_bg(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                if let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
+                    sui.set_item_edit_bg(new_col.clone().into());
+                    let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 30, 41, 59));
+                    sui.set_item_edit_bg_col(col);
+                    let c_idx = sel_idx.load(Ordering::SeqCst);
+                    let item_idx = sui.get_selected_item_index();
+                    if item_idx >= 0 {
+                        let mut cfg = c_arc.lock().unwrap();
+                        if let Some(cont) = cfg.containers.get_mut(c_idx) {
+                            if let Some(itm) = cont.items.get_mut(item_idx as usize) {
+                                itm.bg_color = new_col;
+                                save_config(&cfg);
+                                if let Some(bui) = b_weak.upgrade() {
+                                    refresh_bar_ui(&bui, &cfg);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // Pipette d'écran (Eyedropper) Item Texte
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+        settings_window.on_eyedropper_item_text(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                if let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
+                    sui.set_item_edit_text(new_col.clone().into());
+                    let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 248, 250, 252));
+                    sui.set_item_edit_text_col(col);
+                    let c_idx = sel_idx.load(Ordering::SeqCst);
+                    let item_idx = sui.get_selected_item_index();
+                    if item_idx >= 0 {
+                        let mut cfg = c_arc.lock().unwrap();
+                        if let Some(cont) = cfg.containers.get_mut(c_idx) {
+                            if let Some(itm) = cont.items.get_mut(item_idx as usize) {
+                                itm.text_color = new_col;
+                                save_config(&cfg);
+                                if let Some(bui) = b_weak.upgrade() {
+                                    refresh_bar_ui(&bui, &cfg);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // Pipette d'écran (Eyedropper) Bandeau Fond
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        settings_window.on_eyedropper_bar_bg(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                if let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
+                    sui.set_pref_bar_bg_color(new_col.clone().into());
+                    let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 15, 23, 42));
+                    sui.set_pref_bar_bg_color_val(col);
+                    let mut cfg = c_arc.lock().unwrap();
+                    cfg.settings.bar_bg_color = new_col;
+                    save_config(&cfg);
+                    if let Some(bui) = b_weak.upgrade() {
+                        refresh_bar_ui(&bui, &cfg);
+                    }
+                }
+            }
+        });
+
+        // Pipette d'écran (Eyedropper) Bandeau Texte
+        let s_weak = settings_window.as_weak();
+        let b_weak = bar_window.as_weak();
+        let c_arc = app_config.clone();
+        settings_window.on_eyedropper_bar_text(move || {
+            if let Some(sui) = s_weak.upgrade() {
+                if let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
+                    sui.set_pref_bar_text_color(new_col.clone().into());
+                    let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 248, 250, 252));
+                    sui.set_pref_bar_text_color_val(col);
+                    let mut cfg = c_arc.lock().unwrap();
+                    cfg.settings.bar_text_color = new_col;
+                    save_config(&cfg);
+                    if let Some(bui) = b_weak.upgrade() {
+                        refresh_bar_ui(&bui, &cfg);
                     }
                 }
             }

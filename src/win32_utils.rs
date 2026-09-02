@@ -979,6 +979,111 @@ pub mod win32 {
             None
         }
     }
+
+    /// Boîte de dialogue native Windows pour choisir une couleur avec palette et pipette
+    pub fn pick_color_dialog(initial_hex: &str) -> Option<String> {
+        #[repr(C)]
+        struct CHOOSECOLORW {
+            l_struct_size: u32,
+            hwnd_owner: HWND,
+            h_instance: HWND,
+            rgb_result: u32,
+            lp_cust_colors: *mut u32,
+            flags: u32,
+            l_cust_data: isize,
+            lpfn_hook: Option<unsafe extern "system" fn(HWND, u32, usize, isize) -> usize>,
+            lp_template_name: *const u16,
+        }
+
+        #[link(name = "comdlg32")]
+        unsafe extern "system" {
+            fn ChooseColorW(lpcc: *mut CHOOSECOLORW) -> i32;
+        }
+
+        let mut cust_colors: [u32; 16] = [
+            0x1e293b, 0x0f172a, 0x334155, 0x2563eb,
+            0x3b82f6, 0x38bdf8, 0x06b6d4, 0x10b981,
+            0xf59e0b, 0xef4444, 0xec4899, 0x8b5cf6,
+            0xffffff, 0xf8fafc, 0x94a3b8, 0x000000,
+        ];
+
+        let clean_hex = initial_hex.trim().trim_start_matches('#');
+        let initial_rgb = if clean_hex.len() >= 6 {
+            let r = u32::from_str_radix(&clean_hex[0..2], 16).unwrap_or(0);
+            let g = u32::from_str_radix(&clean_hex[2..4], 16).unwrap_or(0);
+            let b = u32::from_str_radix(&clean_hex[4..6], 16).unwrap_or(0);
+            r | (g << 8) | (b << 16)
+        } else {
+            0x3b291e
+        };
+
+        let mut cc: CHOOSECOLORW = unsafe { std::mem::zeroed() };
+        cc.l_struct_size = std::mem::size_of::<CHOOSECOLORW>() as u32;
+        cc.rgb_result = initial_rgb;
+        cc.lp_cust_colors = cust_colors.as_mut_ptr();
+        cc.flags = 0x00000001 | 0x00000002; // CC_RGBINIT | CC_FULLOPEN
+
+        let ret = unsafe { ChooseColorW(&mut cc) };
+        if ret != 0 {
+            let r = (cc.rgb_result & 0xFF) as u8;
+            let g = ((cc.rgb_result >> 8) & 0xFF) as u8;
+            let b = ((cc.rgb_result >> 16) & 0xFF) as u8;
+            Some(format!("#{:02x}{:02x}{:02x}", r, g, b))
+        } else {
+            None
+        }
+    }
+
+    /// Pipette de sélection d'écran (Eyedropper) : capture la couleur de n'importe quel pixel de l'écran au clic
+    pub fn pick_color_eyedropper() -> Option<String> {
+        unsafe {
+            // Attendre le relâchement du bouton gauche s'il était déjà enfoncé
+            while (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0 {
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
+
+            let cursor = LoadCursorW(std::ptr::null_mut(), IDC_CROSS);
+
+            let start_time = std::time::Instant::now();
+            loop {
+                if !cursor.is_null() {
+                    SetCursor(cursor);
+                }
+
+                // Annulation après 45 secondes d'inactivité
+                if start_time.elapsed().as_secs() > 45 {
+                    return None;
+                }
+
+                // Annulation via Echap ou Clic droit
+                if (GetAsyncKeyState(VK_ESCAPE as i32) as u16 & 0x8000) != 0
+                    || (GetAsyncKeyState(VK_RBUTTON as i32) as u16 & 0x8000) != 0
+                {
+                    return None;
+                }
+
+                // Clic gauche : capture du pixel sous le curseur
+                if (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0 {
+                    let mut pt = POINT { x: 0, y: 0 };
+                    GetCursorPos(&mut pt);
+                    let hdc = GetDC(std::ptr::null_mut());
+                    if !hdc.is_null() {
+                        let pixel = GetPixel(hdc, pt.x, pt.y);
+                        ReleaseDC(std::ptr::null_mut(), hdc);
+                        if pixel != 0xFFFFFFFF {
+                            let r = (pixel & 0xFF) as u8;
+                            let g = ((pixel >> 8) & 0xFF) as u8;
+                            let b = ((pixel >> 16) & 0xFF) as u8;
+                            return Some(format!("#{:02x}{:02x}{:02x}", r, g, b));
+                        }
+                    }
+                    return None;
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -994,6 +1099,8 @@ pub mod win32 {
     pub fn register_hotkey_combo(_hwnd: *mut std::ffi::c_void, _id: i32, _mods: &[String], _key: &str) -> bool { true }
     pub fn unregister_hotkey_id(_hwnd: *mut std::ffi::c_void, _id: i32) {}
     pub fn create_tray_icon(_hwnd: *mut std::ffi::c_void, _tip: &str) -> bool { true }
+    pub fn pick_color_dialog(_initial_hex: &str) -> Option<String> { None }
+    pub fn pick_color_eyedropper() -> Option<String> { None }
     pub fn remove_tray_icon(_hwnd: *mut std::ffi::c_void) {}
     pub fn show_tray_context_menu(_hwnd: *mut std::ffi::c_void, _is_auto: bool) {}
     pub fn set_autostart(_enabled: bool) -> Result<(), String> { Ok(()) }
