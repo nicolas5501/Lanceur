@@ -29,7 +29,7 @@ export struct BarRowData {
     containers: [BarContainerData],
 }
 
-component DropdownItemRow inherits Rectangle {
+export component DropdownItemRow inherits Rectangle {
     in property <string> item_name: "";
     in property <string> icon_type: "emoji";
     in property <string> icon_emoji: "🚀";
@@ -216,13 +216,12 @@ export component BarWindow inherits Window {
                         if root.bar_position == "Floating" && self.pressed {
                             root.window_dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
                         }
-                        if root.active_dropdown_idx >= 0 {
-                            root.active_dropdown_idx = -1;
-                            root.dropdown_state_changed(false);
-                        }
                     } else if event.kind == PointerEventKind.down {
                         if root.bar_position == "Floating" {
                             root.window_drag_started();
+                        } else if root.active_dropdown_idx >= 0 {
+                            root.active_dropdown_idx = -1;
+                            root.dropdown_state_changed(false);
                         }
                     } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
                         root.open_context_menu();
@@ -268,10 +267,11 @@ export component BarWindow inherits Window {
                             }
                         }
 
-                        // Liste Horizontale des Conteneurs de cette ligne
+                        // Liste Horizontale des Conteneurs de cette ligne (SANS dropdowns)
                         for cont[c_idx] in row_data.containers : cont_wrapper := Rectangle {
                             width: cont.width_val > 0px ? cont.width_val : cont_layout.min-width;
                             height: parent.height;
+                            clip: false;
 
                             // Bouton Conteneur pleine hauteur avec couleurs personnalisables
                             cont_pill := Rectangle {
@@ -319,10 +319,13 @@ export component BarWindow inherits Window {
                                 c_touch := TouchArea {
                                     mouse-cursor: pointer;
                                     pointer-event(event) => {
-                                        if event.kind == PointerEventKind.move || self.has-hover {
-                                            if root.active_dropdown_idx != cont.flat_idx {
-                                                root.active_dropdown_idx = cont.flat_idx;
-                                                root.dropdown_state_changed(true);
+                                        if event.kind == PointerEventKind.move && self.has-hover {
+                                            // N'ouvre/change le dropdown que si c'est le sien ou s'il n'y en a pas d'actif
+                                            if root.active_dropdown_idx == -1 || root.active_dropdown_idx == cont.flat_idx {
+                                                if root.active_dropdown_idx != cont.flat_idx {
+                                                    root.active_dropdown_idx = cont.flat_idx;
+                                                    root.dropdown_state_changed(true);
+                                                }
                                             }
                                         } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
                                             root.open_context_menu();
@@ -346,13 +349,13 @@ export component BarWindow inherits Window {
                                 }
                             }
 
-                            // Le Menu Déroulant rattaché DIRECTEMENT avec personnalisation des couleurs
+                            // Le Menu Déroulant rattaché DIRECTEMENT
                             if root.active_dropdown_idx == cont.flat_idx : dropdown_popover := Rectangle {
                                 x: 0px;
                                 height: max(32px, (cont.items.length * (root.item_h + 2px)) + 8px);
                                 y: root.bar_position == "Bottom" ? -self.height : parent.height;
                                 width: max(cont_pill.width, max(190px, dropdown_layout.min-width + 16px));
-                                background: root.bar_bg_color;
+                                background: root.bar_bg_color.with-alpha(1.0);
                                 border-radius: 4px;
                                 border-width: 1px;
                                 border-color: #3b82f6cc;
