@@ -21,6 +21,8 @@ export struct BarContainerData {
     id: string,
     name: string,
     icon: string,
+    icon_type: string, // "emoji" ou "extracted"
+    icon_image: image,
     width_val: length, // 0 = auto
     display_mode: string, // "Both", "IconOnly", "NameOnly"
     bg_color: color,
@@ -330,7 +332,13 @@ export component BarWindow inherits Window {
                                     spacing: 6px;
                                     alignment: center;
 
-                                    if cont.display_mode != "NameOnly" : Text {
+                                    if cont.display_mode != "NameOnly" && cont.icon_type == "extracted" : Image {
+                                        source: cont.icon_image;
+                                        width: root.icon_sz;
+                                        height: root.icon_sz;
+                                    }
+
+                                    if cont.display_mode != "NameOnly" && cont.icon_type != "extracted" : Text {
                                         text: cont.icon;
                                         font-size: root.icon_sz;
                                         vertical-alignment: center;

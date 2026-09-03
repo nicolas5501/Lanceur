@@ -84,6 +84,10 @@ pub struct ContainerConfig {
     pub order: usize,
     #[serde(default = "default_display_mode")]
     pub display_mode: String, // "Both", "IconOnly", "NameOnly"
+    #[serde(default = "default_icon_type")]
+    pub icon_type: String,    // "emoji" ou "extracted"
+    #[serde(default)]
+    pub icon_path: String,    // Ex: "C:\\Windows\\explorer.exe" ou vide
     #[serde(default)]
     pub bg_color: String,     // Ex: "#1e293b" ou vide
     #[serde(default)]
@@ -97,6 +101,10 @@ pub struct ContainerConfig {
     #[serde(default = "default_columns_count")]
     pub columns_count: usize, // 1 à 10 colonnes (1 par défaut)
     pub items: Vec<LauncherItem>,
+}
+
+fn default_icon_type() -> String {
+    "emoji".to_string()
 }
 
 fn default_display_mode() -> String {
@@ -157,6 +165,8 @@ pub fn default_config() -> AppConfig {
                 width: 0.0,
                 order: 0,
                 display_mode: "Both".to_string(),
+                icon_type: "emoji".to_string(),
+                icon_path: String::new(),
                 bg_color: "".to_string(),
                 text_color: "".to_string(),
                 hotkey_modifiers: Vec::new(),
@@ -199,6 +209,8 @@ pub fn default_config() -> AppConfig {
                 width: 0.0,
                 order: 1,
                 display_mode: "Both".to_string(),
+                icon_type: "emoji".to_string(),
+                icon_path: String::new(),
                 bg_color: "".to_string(),
                 text_color: "".to_string(),
                 hotkey_modifiers: Vec::new(),

@@ -10,6 +10,8 @@ export struct ContainerItemSummary {
     id: string,
     name: string,
     icon: string,
+    icon_type: string,
+    icon_image: image,
     width_val: float,
     display_mode: string,
     bg_color: string,
@@ -26,11 +28,79 @@ export struct ItemDetailData {
     target: string,
     icon_type: string,
     icon_value: string,
+    icon_image: image,
     container_id: string,
     bg_color: string,
     text_color: string,
     hotkey_display: string,
     col_idx: int,
+}
+
+export component HelpTooltip inherits Rectangle {
+    in property <string> text: "";
+    in property <string> example: "";
+    
+    width: 17px;
+    height: 17px;
+    border-radius: 8.5px;
+    background: tip_touch.has-hover ? #38bdf844 : #33415566;
+    border-width: 1px;
+    border-color: tip_touch.has-hover ? #38bdf8 : #64748b;
+    clip: false;
+
+    Text {
+        text: "?";
+        font-size: 10px;
+        font-weight: 800;
+        color: tip_touch.has-hover ? #38bdf8 : #94a3b8;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    tip_touch := TouchArea {
+        mouse-cursor: pointer;
+    }
+
+    if tip_touch.has-hover : Rectangle {
+        x: 22px;
+        y: -10px;
+        z: 1000;
+        width: 250px;
+        background: #020617;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: #38bdf8;
+
+        VerticalLayout {
+            padding: 8px;
+            spacing: 5px;
+            Text {
+                text: root.text;
+                font-size: 11px;
+                color: #e2e8f0;
+                wrap: word-wrap;
+            }
+            if root.example != "" : Rectangle {
+                background: #0f172a;
+                border-radius: 4px;
+                border-width: 1px;
+                border-color: #1e293b;
+                HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    padding-top: 3px;
+                    padding-bottom: 3px;
+                    Text {
+                        text: "💡 Ex: " + root.example;
+                        font-size: 10px;
+                        font-weight: 600;
+                        color: #38bdf8;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
 }
 
 export component SettingsWindow inherits Window {
@@ -54,6 +124,8 @@ export component SettingsWindow inherits Window {
     in-out property <int> selected_container_index: 0;
     in-out property <string> edit_container_name: "";
     in-out property <string> edit_container_icon: "";
+    in-out property <string> edit_container_icon_type: "emoji";
+    in-out property <image> edit_container_icon_image;
     in-out property <float> edit_container_width: 0;
     in-out property <string> edit_container_display_mode: "Both";
     in-out property <string> edit_container_bg: "";
@@ -62,6 +134,7 @@ export component SettingsWindow inherits Window {
     in-out property <color> edit_container_text_col: #f8fafc;
     in-out property <int> edit_container_row: 0;
     in-out property <int> edit_container_columns: 0;
+    in-out property <int> selected_column_filter: -1; // -1: Toutes les colonnes, 0: Col 1...
     in property <[string]> available_container_columns: ["1 colonne", "2 colonnes", "3 colonnes", "4 colonnes", "5 colonnes", "6 colonnes", "7 colonnes", "8 colonnes", "9 colonnes", "10 colonnes"];
     in-out property <bool> edit_cont_mod_ctrl: false;
     in-out property <bool> edit_cont_mod_alt: false;
@@ -78,6 +151,7 @@ export component SettingsWindow inherits Window {
     in-out property <string> item_edit_target: "";
     in-out property <string> item_edit_icon_type: "emoji";
     in-out property <string> item_edit_icon_value: "🚀";
+    in-out property <image> item_edit_icon_image;
     in-out property <string> item_edit_bg: "";
     in-out property <string> item_edit_text: "";
     in-out property <color> item_edit_bg_col: #1e293b;
@@ -130,6 +204,8 @@ export component SettingsWindow inherits Window {
     callback move_container_up(int);
     callback move_container_down(int);
     callback save_container_info();
+    callback browse_container_icon_file();
+    callback select_column_filter(int);
 
     // Callbacks Items
     callback open_add_item();
@@ -141,6 +217,7 @@ export component SettingsWindow inherits Window {
     callback duplicate_item(int, int);
     callback move_item_to_container(int, int);
     callback browse_item_target();
+    callback browse_item_icon_file();
     callback save_item_editor();
 
     // Callbacks Pipette & Couleurs
@@ -251,26 +328,31 @@ export component SettingsWindow inherits Window {
             spacing: 12px;
             vertical-stretch: 1;
 
-            // ================= PANNEAU 1 : LIGNES =================
+            // ================= ZONE 1 : LIGNES =================
             Rectangle {
-                width: 220px;
+                width: 200px;
                 background: #1e293b;
                 border-radius: 10px;
                 border-width: 1px;
                 border-color: #334155;
 
                 VerticalLayout {
-                    padding: 12px;
+                    padding: 10px;
                     spacing: 8px;
 
                     // En-tête Lignes
                     HorizontalLayout {
+                        spacing: 6px;
                         Text {
-                            text: "Lignes";
-                            font-size: 14px;
+                            text: "1. Lignes";
+                            font-size: 13px;
                             font-weight: 800;
                             color: #93c5fd;
                             vertical-alignment: center;
+                        }
+                        HelpTooltip {
+                            text: "Lignes horizontales du bandeau. Permet d'organiser les conteneurs sur plusieurs étages.";
+                            example: "Ligne 1 (Haut), Ligne 2...";
                         }
                         Rectangle { horizontal-stretch: 1; }
                         Button {
@@ -281,9 +363,9 @@ export component SettingsWindow inherits Window {
 
                     // Bouton / filtre "Toutes les lignes"
                     Rectangle {
-                        height: 36px;
+                        height: 34px;
                         border-radius: 6px;
-                        background: root.selected_line_idx == -1 ? #3b82f633 : (all_lines_touch.has_hover ? #1e293b88 : #0f172a88);
+                        background: root.selected_line_idx == -1 ? #3b82f633 : (all_lines_touch.has-hover ? #1e293b88 : #0f172a88);
                         border-width: 1px;
                         border-color: root.selected_line_idx == -1 ? #3b82f6 : #33415544;
 
@@ -309,8 +391,8 @@ export component SettingsWindow inherits Window {
                                     vertical-alignment: center;
                                 }
                                 Text {
-                                    text: "Toutes les lignes";
-                                    font-size: 12px;
+                                    text: "Toutes";
+                                    font-size: 11px;
                                     font-weight: root.selected_line_idx == -1 ? 700 : 500;
                                     color: root.selected_line_idx == -1 ? #60a5fa : #cbd5e1;
                                     vertical-alignment: center;
@@ -330,11 +412,11 @@ export component SettingsWindow inherits Window {
                     ScrollView {
                         vertical-stretch: 1;
                         VerticalLayout {
-                            spacing: 6px;
+                            spacing: 5px;
                             for line in root.lines_list : Rectangle {
-                                height: 46px;
+                                height: 44px;
                                 border-radius: 6px;
-                                background: root.selected_line_idx == line.index ? #3b82f633 : (l_touch.has_hover ? #1e293b88 : #0f172a88);
+                                background: root.selected_line_idx == line.index ? #3b82f633 : (l_touch.has-hover ? #1e293b88 : #0f172a88);
                                 border-width: 1px;
                                 border-color: root.selected_line_idx == line.index ? #3b82f6 : #33415544;
                                 animate background { duration: 80ms; }
@@ -348,9 +430,9 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 HorizontalLayout {
-                                    padding-left: 10px;
+                                    padding-left: 8px;
                                     padding-right: 6px;
-                                    spacing: 6px;
+                                    spacing: 4px;
                                     alignment: space-between;
 
                                     VerticalLayout {
@@ -358,41 +440,43 @@ export component SettingsWindow inherits Window {
                                         spacing: 2px;
                                         Text {
                                             text: line.name;
-                                            font-size: 12px;
+                                            font-size: 11px;
                                             font-weight: 700;
                                             color: root.selected_line_idx == line.index ? #93c5fd : #f8fafc;
                                             overflow: elide;
                                         }
                                         Text {
-                                            text: line.containers_count + (line.containers_count > 1 ? " conteneurs" : " conteneur");
-                                            font-size: 10px;
+                                            text: line.containers_count + (line.containers_count > 1 ? " cont." : " cont.");
+                                            font-size: 9px;
                                             color: #64748b;
                                         }
                                     }
 
                                     HorizontalLayout {
-                                        spacing: 3px;
+                                        spacing: 2px;
                                         alignment: center;
 
                                         Rectangle {
-                                            width: 22px; height: 22px; border-radius: 4px;
-                                            background: l_btn_up.has_hover ? #475569 : #334155;
+                                            width: 20px; height: 22px; border-radius: 4px;
+                                            background: l_btn_up.has-hover ? #475569 : #334155;
                                             animate background { duration: 80ms; }
-                                            Text { text: "▲"; font-size: 10px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                            Text { text: "▲"; font-size: 9px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
                                             l_btn_up := TouchArea { mouse-cursor: pointer; clicked => { root.move_line_up(line.index); } }
                                         }
                                         Rectangle {
-                                            width: 22px; height: 22px; border-radius: 4px;
-                                            background: l_btn_down.has_hover ? #475569 : #334155;
+                                            width: 20px; height: 22px; border-radius: 4px;
+                                            background: l_btn_down.has-hover ? #475569 : #334155;
                                             animate background { duration: 80ms; }
-                                            Text { text: "▼"; font-size: 10px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                            Text { text: "▼"; font-size: 9px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
                                             l_btn_down := TouchArea { mouse-cursor: pointer; clicked => { root.move_line_down(line.index); } }
                                         }
                                         if root.lines_list.length > 1 : Rectangle {
                                             width: 22px; height: 22px; border-radius: 4px;
-                                            background: l_btn_del.has_hover ? #991b1b : #7f1d1d;
+                                            background: l_btn_del.has-hover ? #ef444433 : #33415533;
+                                            border-width: 1px;
+                                            border-color: l_btn_del.has-hover ? #ef4444 : #47556944;
                                             animate background { duration: 80ms; }
-                                            Text { text: "✕"; font-size: 10px; color: #fca5a5; horizontal-alignment: center; vertical-alignment: center; }
+                                            Text { text: "🗑️"; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
                                             l_btn_del := TouchArea { mouse-cursor: pointer; clicked => { root.delete_line(line.index); } }
                                         }
                                     }
@@ -403,16 +487,16 @@ export component SettingsWindow inherits Window {
                 }
             }
 
-            // ================= PANNEAU 2 : CONTENEURS =================
+            // ================= ZONE 2 : CONTENEURS =================
             Rectangle {
-                width: 380px;
+                width: 300px;
                 background: #1e293b;
                 border-radius: 10px;
                 border-width: 1px;
                 border-color: #334155;
 
                 VerticalLayout {
-                    padding: 12px;
+                    padding: 10px;
                     spacing: 8px;
 
                     HorizontalLayout {
@@ -421,15 +505,19 @@ export component SettingsWindow inherits Window {
                         HorizontalLayout {
                             spacing: 6px;
                             Text {
-                                text: "Conteneurs";
-                                font-size: 14px;
+                                text: "2. Conteneurs";
+                                font-size: 13px;
                                 font-weight: 800;
                                 color: #93c5fd;
                                 vertical-alignment: center;
                             }
+                            HelpTooltip {
+                                text: "Groupes de raccourcis affichés sur la ligne. Cliquez pour ouvrir leur menu déroulant.";
+                                example: "Web & Outils, Système, Jeux...";
+                            }
                             if root.selected_line_idx >= 0 : Text {
                                 text: "• L" + (root.selected_line_idx + 1);
-                                font-size: 11px;
+                                font-size: 10px;
                                 font-weight: 700;
                                 color: #38bdf8;
                                 vertical-alignment: center;
@@ -444,12 +532,12 @@ export component SettingsWindow inherits Window {
                     ScrollView {
                         vertical-stretch: 1;
                         VerticalLayout {
-                            spacing: 6px;
+                            spacing: 5px;
                             for cont[idx] in root.containers_list : Rectangle {
-                                height: (root.selected_line_idx == -1 || cont.cont_row == root.selected_line_idx) ? 48px : 0px;
+                                height: (root.selected_line_idx == -1 || cont.cont_row == root.selected_line_idx) ? 46px : 0px;
                                 visible: root.selected_line_idx == -1 || cont.cont_row == root.selected_line_idx;
                                 border-radius: 6px;
-                                background: idx == root.selected_container_index ? #3b82f633 : (row_touch.has_hover ? #1e293b88 : #0f172a88);
+                                background: idx == root.selected_container_index ? #3b82f633 : (row_touch.has-hover ? #1e293b88 : #0f172a88);
                                 border-width: (root.selected_line_idx == -1 || cont.cont_row == root.selected_line_idx) ? 1px : 0px;
                                 border-color: idx == root.selected_container_index ? #3b82f6 : #33415544;
                                 animate background { duration: 80ms; }
@@ -461,13 +549,20 @@ export component SettingsWindow inherits Window {
 
                                 HorizontalLayout {
                                     padding-left: 8px;
-                                    padding-right: 8px;
+                                    padding-right: 6px;
                                     spacing: 6px;
                                     alignment: center;
 
-                                    Text {
-                                        text: cont.icon;
-                                        font-size: max(15px, root.pref_icon_sz * 1px);
+                                    if cont.icon_type == "extracted" : Image {
+                                        source: cont.icon_image;
+                                        width: 18px;
+                                        height: 18px;
+                                        vertical-alignment: center;
+                                    }
+
+                                    if cont.icon_type != "extracted" : Text {
+                                        text: cont.icon != "" ? cont.icon : "📦";
+                                        font-size: 14px;
                                         vertical-alignment: center;
                                     }
 
@@ -482,7 +577,7 @@ export component SettingsWindow inherits Window {
 
                                             Text {
                                                 text: cont.name;
-                                                font-size: 12px;
+                                                font-size: 11px;
                                                 font-weight: 600;
                                                 color: #f8fafc;
                                                 overflow: elide;
@@ -502,13 +597,13 @@ export component SettingsWindow inherits Window {
                                                 border-radius: 3px;
                                                 border-width: 1px;
                                                 border-color: #38bdf888;
-                                                height: 15px;
+                                                height: 14px;
                                                 HorizontalLayout {
                                                     padding-left: 3px;
                                                     padding-right: 3px;
                                                     Text {
                                                         text: "L" + (cont.cont_row + 1);
-                                                        font-size: 9px;
+                                                        font-size: 8px;
                                                         font-weight: 700;
                                                         color: #38bdf8;
                                                         vertical-alignment: center;
@@ -521,13 +616,13 @@ export component SettingsWindow inherits Window {
                                                 border-radius: 3px;
                                                 border-width: 1px;
                                                 border-color: #34d39988;
-                                                height: 15px;
+                                                height: 14px;
                                                 HorizontalLayout {
                                                     padding-left: 3px;
                                                     padding-right: 3px;
                                                     Text {
                                                         text: cont.columns_count + " col";
-                                                        font-size: 9px;
+                                                        font-size: 8px;
                                                         font-weight: 700;
                                                         color: #34d399;
                                                         vertical-alignment: center;
@@ -544,28 +639,30 @@ export component SettingsWindow inherits Window {
                                     }
 
                                     HorizontalLayout {
-                                        spacing: 3px;
+                                        spacing: 2px;
                                         alignment: center;
 
                                         Rectangle {
-                                            width: 22px; height: 22px; border-radius: 4px;
-                                            background: c_btn_up.has_hover ? #475569 : #334155;
+                                            width: 20px; height: 22px; border-radius: 4px;
+                                            background: c_btn_up.has-hover ? #475569 : #334155;
                                             animate background { duration: 80ms; }
                                             Text { text: "▲"; font-size: 9px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
                                             c_btn_up := TouchArea { mouse-cursor: pointer; clicked => { root.move_container_up(idx); } }
                                         }
                                         Rectangle {
-                                            width: 22px; height: 22px; border-radius: 4px;
-                                            background: c_btn_down.has_hover ? #475569 : #334155;
+                                            width: 20px; height: 22px; border-radius: 4px;
+                                            background: c_btn_down.has-hover ? #475569 : #334155;
                                             animate background { duration: 80ms; }
                                             Text { text: "▼"; font-size: 9px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
                                             c_btn_down := TouchArea { mouse-cursor: pointer; clicked => { root.move_container_down(idx); } }
                                         }
                                         Rectangle {
                                             width: 22px; height: 22px; border-radius: 4px;
-                                            background: c_btn_del.has_hover ? #991b1b : #7f1d1d;
+                                            background: c_btn_del.has-hover ? #ef444433 : #33415533;
+                                            border-width: 1px;
+                                            border-color: c_btn_del.has-hover ? #ef4444 : #47556944;
                                             animate background { duration: 80ms; }
-                                            Text { text: "✕"; font-size: 9px; color: #fca5a5; horizontal-alignment: center; vertical-alignment: center; }
+                                            Text { text: "🗑️"; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
                                             c_btn_del := TouchArea { mouse-cursor: pointer; clicked => { root.delete_container(idx); } }
                                         }
                                     }
@@ -574,7 +671,7 @@ export component SettingsWindow inherits Window {
                         }
                     }
 
-                    // Édition rapide du conteneur sélectionné (champs protégés contre le débordement)
+                    // Édition directe du conteneur sélectionné
                     Rectangle {
                         background: #0f172a;
                         border-radius: 8px;
@@ -586,26 +683,85 @@ export component SettingsWindow inherits Window {
                             spacing: 5px;
 
                             Text { text: "Éditer le conteneur sélectionné :"; font-size: 11px; color: #94a3b8; font-weight: 600; }
+
+                            // Nom du conteneur
                             HorizontalLayout {
-                                spacing: 6px;
-                                LineEdit {
-                                    text <=> root.edit_container_icon;
-                                    placeholder-text: "Icône";
-                                    width: 44px;
-                                    edited => { root.save_container_info(); }
-                                }
+                                spacing: 5px;
+                                alignment: center;
+                                Text { text: "Nom :"; font-size: 10px; color: #cbd5e1; width: 42px; vertical-alignment: center; }
                                 LineEdit {
                                     text <=> root.edit_container_name;
                                     placeholder-text: "Nom du conteneur";
                                     horizontal-stretch: 1;
                                     edited => { root.save_container_info(); }
                                 }
+                                HelpTooltip {
+                                    text: "Nom affiché sur la barre pour identifier ce groupe de raccourcis.";
+                                    example: "Web & Outils, Développement, Jeux";
+                                }
+                            }
+
+                            // Zone Icône du conteneur (Point 2 & 3)
+                            HorizontalLayout {
+                                spacing: 5px;
+                                alignment: center;
+                                Text { text: "Icône :"; font-size: 10px; color: #cbd5e1; width: 42px; vertical-alignment: center; }
+                                
+                                // Aperçu de l'icône
+                                Rectangle {
+                                    width: 26px; height: 26px;
+                                    background: #1e293b;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: #38bdf888;
+                                    clip: true;
+                                    if root.edit_container_icon_type == "extracted" : Image {
+                                        source: root.edit_container_icon_image;
+                                        width: 20px;
+                                        height: 20px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    if root.edit_container_icon_type != "extracted" : Text {
+                                        text: root.edit_container_icon != "" ? root.edit_container_icon : "📦";
+                                        font-size: 15px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                if root.edit_container_icon_type != "extracted" : LineEdit {
+                                    text <=> root.edit_container_icon;
+                                    placeholder-text: "Emoji (ex: 📁)";
+                                    horizontal-stretch: 1;
+                                    edited => { root.save_container_info(); }
+                                }
+
+                                Button {
+                                    text: root.edit_container_icon_type == "extracted" ? "🖼️ .exe" : "🖼️ .exe...";
+                                    clicked => { root.browse_container_icon_file(); }
+                                }
+
+                                if root.edit_container_icon_type == "extracted" : Button {
+                                    text: "😀 Emoji";
+                                    clicked => {
+                                        root.edit_container_icon_type = "emoji";
+                                        if root.edit_container_icon == "" { root.edit_container_icon = "📦"; }
+                                        root.save_container_info();
+                                    }
+                                }
+
+                                HelpTooltip {
+                                    text: "Icône affichée dans la barre. Vous pouvez saisir un emoji directement ou cliquer sur '🖼️ .exe...' pour extraire l'icône réelle d'une application.";
+                                    example: "🌐 ou explorer.exe";
+                                }
                             }
 
                             // Mode d'affichage
                             HorizontalLayout {
-                                spacing: 6px;
-                                Text { text: "Affichage :"; font-size: 11px; color: #94a3b8; vertical-alignment: center; width: 75px; }
+                                spacing: 5px;
+                                alignment: center;
+                                Text { text: "Affichage :"; font-size: 10px; color: #cbd5e1; vertical-alignment: center; width: 60px; }
                                 ComboBox {
                                     model: ["Icône + Nom", "Icône seulement", "Nom seulement"];
                                     current-value: root.edit_container_display_mode == "Both" ? "Icône + Nom" : (root.edit_container_display_mode == "IconOnly" ? "Icône seulement" : "Nom seulement");
@@ -617,12 +773,17 @@ export component SettingsWindow inherits Window {
                                         root.save_container_info();
                                     }
                                 }
+                                HelpTooltip {
+                                    text: "Choisissez si la barre affiche l'icône, le nom ou les deux à la fois.";
+                                    example: "Icône + Nom";
+                                }
                             }
 
-                            // Ligne du bandeau
+                            // Ligne du bandeau (Hiérarchie)
                             HorizontalLayout {
-                                spacing: 6px;
-                                Text { text: "Ligne :"; font-size: 11px; color: #94a3b8; vertical-alignment: center; width: 75px; }
+                                spacing: 5px;
+                                alignment: center;
+                                Text { text: "Ligne :"; font-size: 10px; color: #cbd5e1; vertical-alignment: center; width: 60px; }
                                 ComboBox {
                                     model: root.available_rows;
                                     current-index <=> root.edit_container_row;
@@ -631,12 +792,17 @@ export component SettingsWindow inherits Window {
                                         root.save_container_info();
                                     }
                                 }
+                                HelpTooltip {
+                                    text: "Déplacez ce conteneur vers une autre ligne horizontale du bandeau.";
+                                    example: "Ligne 1 (Haut)";
+                                }
                             }
 
                             // Colonnes du conteneur
                             HorizontalLayout {
-                                spacing: 6px;
-                                Text { text: "Colonnes :"; font-size: 11px; color: #94a3b8; vertical-alignment: center; width: 75px; }
+                                spacing: 5px;
+                                alignment: center;
+                                Text { text: "Colonnes :"; font-size: 10px; color: #cbd5e1; vertical-alignment: center; width: 60px; }
                                 ComboBox {
                                     model: root.available_container_columns;
                                     current-index <=> root.edit_container_columns;
@@ -645,109 +811,238 @@ export component SettingsWindow inherits Window {
                                         root.save_container_info();
                                     }
                                 }
+                                HelpTooltip {
+                                    text: "Nombre de colonnes dans le menu déroulant de ce conteneur (1 à 10 colonnes).";
+                                    example: "2 colonnes";
+                                }
                             }
 
-                            // Couleur Fond du conteneur
+                            // Couleurs Fond et Texte du conteneur
                             HorizontalLayout {
-                                spacing: 6px;
+                                spacing: 4px;
                                 alignment: center;
-
-                                Text { text: "Couleur Fond :"; font-size: 11px; color: #cbd5e1; font-weight: 600; vertical-alignment: center; width: 90px; }
+                                Text { text: "Fond :"; font-size: 10px; color: #cbd5e1; width: 34px; vertical-alignment: center; }
                                 Rectangle {
-                                    width: 24px; height: 22px; border-radius: 4px;
+                                    width: 22px; height: 20px; border-radius: 4px;
                                     background: root.edit_container_bg != "" ? root.edit_container_bg_col : #1e293b;
-                                    border-width: 1.5px; border-color: root.edit_container_bg != "" ? #ffffffaa : #475569;
+                                    border-width: 1px; border-color: root.edit_container_bg != "" ? #ffffffaa : #475569;
                                     clip: true;
-                                    if root.edit_container_bg == "" : Text {
-                                        text: "Auto"; font-size: 8px; color: #94a3b8;
-                                        horizontal-alignment: center; vertical-alignment: center;
-                                    }
                                     TouchArea { mouse-cursor: pointer; clicked => { root.pick_container_bg_color(); } }
-                                }
-                                Rectangle {
-                                    width: 24px; height: 22px; border-radius: 4px;
-                                    background: bg_pip_cbg.has_hover ? #475569 : #334155;
-                                    border-width: 1px; border-color: #64748b;
-                                    Text { text: "🧪"; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
-                                    bg_pip_cbg := TouchArea { mouse-cursor: pointer; clicked => { root.eyedropper_container_bg(); } }
                                 }
                                 LineEdit {
                                     text <=> root.edit_container_bg;
-                                    placeholder-text: "Défaut / #hex";
+                                    placeholder-text: "Hex (#...)";
                                     horizontal-stretch: 1;
                                     edited => { root.container_bg_text_changed(); }
                                 }
-                            }
-
-                            // Couleur Texte du conteneur
-                            HorizontalLayout {
-                                spacing: 6px;
-                                alignment: center;
-
-                                Text { text: "Couleur Texte :"; font-size: 11px; color: #cbd5e1; font-weight: 600; vertical-alignment: center; width: 90px; }
+                                Text { text: "Texte :"; font-size: 10px; color: #cbd5e1; width: 34px; vertical-alignment: center; }
                                 Rectangle {
-                                    width: 24px; height: 22px; border-radius: 4px;
+                                    width: 22px; height: 20px; border-radius: 4px;
                                     background: root.edit_container_text != "" ? root.edit_container_text_col : #f8fafc;
-                                    border-width: 1.5px; border-color: root.edit_container_text != "" ? #ffffffaa : #475569;
+                                    border-width: 1px; border-color: root.edit_container_text != "" ? #ffffffaa : #475569;
                                     clip: true;
-                                    if root.edit_container_text == "" : Text {
-                                        text: "Auto"; font-size: 8px; color: #475569;
-                                        horizontal-alignment: center; vertical-alignment: center;
-                                    }
                                     TouchArea { mouse-cursor: pointer; clicked => { root.pick_container_text_color(); } }
-                                }
-                                Rectangle {
-                                    width: 24px; height: 22px; border-radius: 4px;
-                                    background: bg_pip_ctxt.has_hover ? #475569 : #334155;
-                                    border-width: 1px; border-color: #64748b;
-                                    Text { text: "🧪"; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
-                                    bg_pip_ctxt := TouchArea { mouse-cursor: pointer; clicked => { root.eyedropper_container_text(); } }
                                 }
                                 LineEdit {
                                     text <=> root.edit_container_text;
-                                    placeholder-text: "Défaut / #hex";
+                                    placeholder-text: "Hex (#...)";
                                     horizontal-stretch: 1;
                                     edited => { root.container_text_changed(); }
                                 }
-                            }
-
-                            // Largeur
-                            HorizontalLayout {
-                                spacing: 6px;
-                                Text { text: "Largeur (" + (root.edit_container_width > 0 ? round(root.edit_container_width) + "px" : "Auto") + ") :"; font-size: 10px; color: #94a3b8; vertical-alignment: center; width: 95px; }
-                                Slider {
-                                    minimum: 0;
-                                    maximum: 260;
-                                    value <=> root.edit_container_width;
-                                    horizontal-stretch: 1;
-                                    changed => { root.save_container_info(); }
+                                HelpTooltip {
+                                    text: "Couleurs personnalisées pour le titre de ce conteneur sur le bandeau (laisser vide pour les couleurs par défaut).";
+                                    example: "#1e293b et #ffffff";
                                 }
                             }
 
-                            // Raccourci Dédié (disposé sans débordement)
+                            // Raccourci Dédié Conteneur
                             HorizontalLayout {
-                                alignment: space-between;
-                                Text { text: "Raccourci Dédié :"; font-size: 10px; color: #94a3b8; vertical-alignment: center; }
+                                spacing: 4px;
+                                alignment: center;
+                                Text { text: "Raccourci :"; font-size: 10px; color: #94a3b8; width: 55px; vertical-alignment: center; }
                                 ComboBox {
                                     model: ["", "Space", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Insert", "Delete", "Home", "End", "PageUp", "PageDown", "PrintScreen", "Pause", "ScrollLock", "Tab", "Escape", "Enter", "Backspace", "NumLock", "Caps", "Up", "Down", "Left", "Right", "Numpad0", "Numpad1", "Numpad2", "Numpad3", "Numpad4", "Numpad5", "Numpad6", "Numpad7", "Numpad8", "Numpad9", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
                                     current-value <=> root.edit_cont_hotkey_key;
                                     selected => { root.save_container_info(); }
-                                    width: 95px;
+                                    horizontal-stretch: 1;
                                 }
-                            }
-                            HorizontalLayout {
-                                spacing: 6px;
                                 CheckBox { text: "Ctrl"; checked <=> root.edit_cont_mod_ctrl; toggled => { root.save_container_info(); } }
                                 CheckBox { text: "Alt"; checked <=> root.edit_cont_mod_alt; toggled => { root.save_container_info(); } }
                                 CheckBox { text: "Shift"; checked <=> root.edit_cont_mod_shift; toggled => { root.save_container_info(); } }
                                 CheckBox { text: "Win"; checked <=> root.edit_cont_mod_win; toggled => { root.save_container_info(); } }
+                                HelpTooltip {
+                                    text: "Raccourci clavier global pour ouvrir directement le menu déroulant de ce conteneur.";
+                                    example: "Ctrl + Alt + W";
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // ================= PANNEAU 3 : ITEMS =================
+            // ================= ZONE 3 : COLONNES =================
+            Rectangle {
+                width: 170px;
+                background: #1e293b;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: #334155;
+
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: 8px;
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "3. Colonnes";
+                            font-size: 13px;
+                            font-weight: 800;
+                            color: #93c5fd;
+                            vertical-alignment: center;
+                        }
+                        HelpTooltip {
+                            text: "Organisation des colonnes du conteneur dans son menu déroulant. Cliquez sur une colonne pour filtrer les raccourcis.";
+                            example: "Col 1, Col 2...";
+                        }
+                    }
+
+                    // Bouton / filtre "Toutes les colonnes"
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 6px;
+                        background: root.selected_column_filter == -1 ? #3b82f633 : (all_col_touch.has-hover ? #1e293b88 : #0f172a88);
+                        border-width: 1px;
+                        border-color: root.selected_column_filter == -1 ? #3b82f6 : #33415544;
+
+                        all_col_touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.selected_column_filter = -1;
+                                root.select_column_filter(-1);
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            alignment: space-between;
+                            Text {
+                                text: "Toutes les colonnes";
+                                font-size: 10px;
+                                font-weight: root.selected_column_filter == -1 ? 700 : 500;
+                                color: root.selected_column_filter == -1 ? #60a5fa : #cbd5e1;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "(" + root.items_list.length + ")";
+                                font-size: 9px;
+                                color: #64748b;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Liste des colonnes actives du conteneur
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 5px;
+                            for col_idx in (root.edit_container_columns + 1) : Rectangle {
+                                height: 34px;
+                                border-radius: 6px;
+                                background: root.selected_column_filter == col_idx ? #3b82f633 : (col_row_touch.has-hover ? #1e293b88 : #0f172a88);
+                                border-width: 1px;
+                                border-color: root.selected_column_filter == col_idx ? #3b82f6 : #33415544;
+                                animate background { duration: 80ms; }
+
+                                col_row_touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.selected_column_filter = col_idx;
+                                        root.select_column_filter(col_idx);
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    alignment: space-between;
+
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        Rectangle {
+                                            width: 10px; height: 10px; border-radius: 2px;
+                                            background: col_idx == 0 ? #1d4ed8 : (col_idx == 1 ? #047857 : (col_idx == 2 ? #7c3aed : (col_idx == 3 ? #b45309 : (col_idx == 4 ? #be185d : (col_idx == 5 ? #0891b2 : #475569)))));
+                                        }
+                                        Text {
+                                            text: "Colonne " + (col_idx + 1);
+                                            font-size: 11px;
+                                            font-weight: root.selected_column_filter == col_idx ? 700 : 500;
+                                            color: root.selected_column_filter == col_idx ? #93c5fd : #e2e8f0;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Ajustement rapide du nombre de colonnes du conteneur
+                    Rectangle {
+                        background: #0f172a;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #334155;
+
+                        VerticalLayout {
+                            padding: 6px;
+                            spacing: 4px;
+                            HorizontalLayout {
+                                alignment: space-between;
+                                Text {
+                                    text: "Total colonnes :";
+                                    font-size: 10px;
+                                    color: #94a3b8;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: (root.edit_container_columns + 1) + " / 10";
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                    color: #38bdf8;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Button {
+                                    text: "➖";
+                                    enabled: root.edit_container_columns > 0;
+                                    clicked => {
+                                        if root.edit_container_columns > 0 {
+                                            root.edit_container_columns -= 1;
+                                            root.save_container_info();
+                                        }
+                                    }
+                                }
+                                Button {
+                                    text: "➕";
+                                    enabled: root.edit_container_columns < 9;
+                                    clicked => {
+                                        if root.edit_container_columns < 9 {
+                                            root.edit_container_columns += 1;
+                                            root.save_container_info();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ================= ZONE 4 : ITEMS (RACCOURCIS) =================
             Rectangle {
                 horizontal-stretch: 1;
                 background: #1e293b;
@@ -756,18 +1051,44 @@ export component SettingsWindow inherits Window {
                 border-color: #334155;
 
                 VerticalLayout {
-                    padding: 12px;
+                    padding: 10px;
                     spacing: 8px;
 
                     HorizontalLayout {
-                        Text {
-                            text: "Items du conteneur";
-                            font-size: 14px;
-                            font-weight: 800;
-                            color: #93c5fd;
-                            vertical-alignment: center;
+                        spacing: 6px;
+                        alignment: space-between;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "4. Raccourcis";
+                                font-size: 13px;
+                                font-weight: 800;
+                                color: #93c5fd;
+                                vertical-alignment: center;
+                            }
+                            HelpTooltip {
+                                text: "Applications, dossiers ou URLs lancés depuis ce conteneur. Glissez-déposez un fichier directement pour l'ajouter.";
+                                example: "chrome.exe, calc.exe, https://...";
+                            }
+                            if root.selected_column_filter >= 0 : Rectangle {
+                                background: #0284c733;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: #38bdf888;
+                                height: 16px;
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 4px;
+                                    Text {
+                                        text: "Col " + (root.selected_column_filter + 1);
+                                        font-size: 9px;
+                                        font-weight: 700;
+                                        color: #38bdf8;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
                         }
-                        Rectangle { horizontal-stretch: 1; }
                         Button {
                             text: "➕ Ajouter un item";
                             clicked => { root.open_add_item(); }
@@ -777,14 +1098,14 @@ export component SettingsWindow inherits Window {
                     ScrollView {
                         vertical-stretch: 1;
                         VerticalLayout {
-                            spacing: 6px;
+                            spacing: 5px;
 
                             if root.items_list.length == 0 : Rectangle {
                                 height: 80px;
                                 background: #0f172a44;
                                 border-radius: 6px;
                                 Text {
-                                    text: "Aucun item dans ce conteneur.\nCliquez sur '+ Ajouter un item' pour en créer un.";
+                                    text: "Aucun raccourci dans ce conteneur.\nCliquez sur '+ Ajouter un item' ou glissez-déposez un fichier.";
                                     color: #64748b;
                                     font-size: 11px;
                                     horizontal-alignment: center;
@@ -793,10 +1114,11 @@ export component SettingsWindow inherits Window {
                             }
 
                             for itm[idx] in root.items_list : Rectangle {
-                                height: max(50px, (root.pref_icon_sz * 1px) + 20px);
+                                height: (root.selected_column_filter == -1 || itm.col_idx == root.selected_column_filter) ? max(48px, (root.pref_icon_sz * 1px) + 18px) : 0px;
+                                visible: root.selected_column_filter == -1 || itm.col_idx == root.selected_column_filter;
                                 border-radius: 6px;
-                                background: idx == root.selected_item_index ? #3b82f633 : (item_row_touch.has_hover ? #1e293b88 : #0f172a);
-                                border-width: 1px;
+                                background: idx == root.selected_item_index ? #3b82f633 : (item_row_touch.has-hover ? #1e293b88 : #0f172a);
+                                border-width: (root.selected_column_filter == -1 || itm.col_idx == root.selected_column_filter) ? 1px : 0px;
                                 border-color: idx == root.selected_item_index ? #3b82f6 : #33415566;
                                 animate background { duration: 80ms; }
 
@@ -809,14 +1131,21 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 HorizontalLayout {
-                                    padding-left: 10px;
-                                    padding-right: 10px;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
                                     spacing: 8px;
                                     alignment: center;
 
-                                    Text {
-                                        text: itm.icon_value;
-                                        font-size: max(16px, root.pref_icon_sz * 1px);
+                                    if itm.icon_type == "extracted" : Image {
+                                        source: itm.icon_image;
+                                        width: max(16px, root.pref_icon_sz * 1px);
+                                        height: max(16px, root.pref_icon_sz * 1px);
+                                        vertical-alignment: center;
+                                    }
+
+                                    if itm.icon_type != "extracted" : Text {
+                                        text: itm.icon_value != "" ? itm.icon_value : "🚀";
+                                        font-size: max(15px, root.pref_icon_sz * 1px);
                                         vertical-alignment: center;
                                     }
 
@@ -826,12 +1155,12 @@ export component SettingsWindow inherits Window {
                                         spacing: 2px;
 
                                         HorizontalLayout {
-                                            spacing: 6px;
+                                            spacing: 5px;
                                             alignment: center;
 
                                             Text {
                                                 text: itm.name;
-                                                font-size: 12px;
+                                                font-size: 11px;
                                                 font-weight: 700;
                                                 color: #f8fafc;
                                                 overflow: elide;
@@ -841,13 +1170,13 @@ export component SettingsWindow inherits Window {
                                             if root.edit_container_columns > 0 : Rectangle {
                                                 background: itm.col_idx == 0 ? #1d4ed8 : (itm.col_idx == 1 ? #047857 : (itm.col_idx == 2 ? #7c3aed : (itm.col_idx == 3 ? #b45309 : (itm.col_idx == 4 ? #be185d : (itm.col_idx == 5 ? #0891b2 : #475569)))));
                                                 border-radius: 3px;
-                                                height: 15px;
+                                                height: 14px;
                                                 HorizontalLayout {
                                                     padding-left: 4px;
                                                     padding-right: 4px;
                                                     Text {
                                                         text: "Col " + (itm.col_idx + 1);
-                                                        font-size: 9px;
+                                                        font-size: 8px;
                                                         color: #ffffff;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
@@ -858,13 +1187,13 @@ export component SettingsWindow inherits Window {
                                             if itm.hotkey_display != "" : Rectangle {
                                                 background: #334155;
                                                 border-radius: 3px;
-                                                height: 15px;
+                                                height: 14px;
                                                 HorizontalLayout {
                                                     padding-left: 4px;
                                                     padding-right: 4px;
                                                     Text {
                                                         text: "⌨ " + itm.hotkey_display;
-                                                        font-size: 9px;
+                                                        font-size: 8px;
                                                         color: #93c5fd;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
@@ -875,24 +1204,24 @@ export component SettingsWindow inherits Window {
                                             Rectangle { horizontal-stretch: 1; }
 
                                             HorizontalLayout {
-                                                spacing: 3px;
+                                                spacing: 2px;
                                                 alignment: center;
 
                                                 if root.edit_container_columns > 0 : Rectangle {
-                                                    width: 22px; height: 22px; border-radius: 4px;
-                                                    background: itm_btn_left.has_hover ? #475569 : #1e293b;
+                                                    width: 20px; height: 22px; border-radius: 4px;
+                                                    background: itm_btn_left.has-hover ? #475569 : #1e293b;
                                                     border-width: 1px; border-color: #334155;
-                                                    Text { text: "◀"; font-size: 9px; color: itm.col_idx > 0 ? #cbd5e1 : #475569; horizontal-alignment: center; vertical-alignment: center; }
+                                                    Text { text: "◀"; font-size: 8px; color: itm.col_idx > 0 ? #cbd5e1 : #475569; horizontal-alignment: center; vertical-alignment: center; }
                                                     itm_btn_left := TouchArea {
                                                         mouse-cursor: itm.col_idx > 0 ? pointer : default;
                                                         clicked => { if itm.col_idx > 0 { root.move_item_column(idx, -1); } }
                                                     }
                                                 }
                                                 if root.edit_container_columns > 0 : Rectangle {
-                                                    width: 22px; height: 22px; border-radius: 4px;
-                                                    background: itm_btn_right.has_hover ? #475569 : #1e293b;
+                                                    width: 20px; height: 22px; border-radius: 4px;
+                                                    background: itm_btn_right.has-hover ? #475569 : #1e293b;
                                                     border-width: 1px; border-color: #334155;
-                                                    Text { text: "▶"; font-size: 9px; color: itm.col_idx < root.edit_container_columns ? #cbd5e1 : #475569; horizontal-alignment: center; vertical-alignment: center; }
+                                                    Text { text: "▶"; font-size: 8px; color: itm.col_idx < root.edit_container_columns ? #cbd5e1 : #475569; horizontal-alignment: center; vertical-alignment: center; }
                                                     itm_btn_right := TouchArea {
                                                         mouse-cursor: itm.col_idx < root.edit_container_columns ? pointer : default;
                                                         clicked => { if itm.col_idx < root.edit_container_columns { root.move_item_column(idx, 1); } }
@@ -900,31 +1229,33 @@ export component SettingsWindow inherits Window {
                                                 }
 
                                                 Rectangle {
-                                                    width: 24px; height: 22px; border-radius: 4px;
-                                                    background: itm_btn_up.has_hover ? #475569 : #334155;
+                                                    width: 20px; height: 22px; border-radius: 4px;
+                                                    background: itm_btn_up.has-hover ? #475569 : #334155;
                                                     animate background { duration: 80ms; }
-                                                    Text { text: "▲"; font-size: 10px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                                    Text { text: "▲"; font-size: 9px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
                                                     itm_btn_up := TouchArea { mouse-cursor: pointer; clicked => { root.move_item_up(idx); } }
                                                 }
                                                 Rectangle {
-                                                    width: 24px; height: 22px; border-radius: 4px;
-                                                    background: itm_btn_down.has_hover ? #475569 : #334155;
+                                                    width: 20px; height: 22px; border-radius: 4px;
+                                                    background: itm_btn_down.has-hover ? #475569 : #334155;
                                                     animate background { duration: 80ms; }
-                                                    Text { text: "▼"; font-size: 10px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                                    Text { text: "▼"; font-size: 9px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
                                                     itm_btn_down := TouchArea { mouse-cursor: pointer; clicked => { root.move_item_down(idx); } }
                                                 }
                                                 Rectangle {
-                                                    width: 24px; height: 22px; border-radius: 4px;
-                                                    background: itm_btn_dup.has_hover ? #0f766e : #0d9488;
+                                                    width: 20px; height: 22px; border-radius: 4px;
+                                                    background: itm_btn_dup.has-hover ? #0f766e : #0d9488;
                                                     animate background { duration: 80ms; }
-                                                    Text { text: "⎘"; font-size: 10px; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                                                    Text { text: "⎘"; font-size: 9px; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
                                                     itm_btn_dup := TouchArea { mouse-cursor: pointer; clicked => { root.duplicate_item(idx, root.selected_container_index); } }
                                                 }
                                                 Rectangle {
-                                                    width: 24px; height: 22px; border-radius: 4px;
-                                                    background: itm_btn_del.has_hover ? #b91c1c : #991b1b;
+                                                    width: 22px; height: 22px; border-radius: 4px;
+                                                    background: itm_btn_del.has-hover ? #ef444433 : #33415533;
+                                                    border-width: 1px;
+                                                    border-color: itm_btn_del.has-hover ? #ef4444 : #47556944;
                                                     animate background { duration: 80ms; }
-                                                    Text { text: "✕"; font-size: 10px; color: #fca5a5; horizontal-alignment: center; vertical-alignment: center; }
+                                                    Text { text: "🗑️"; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
                                                     itm_btn_del := TouchArea { mouse-cursor: pointer; clicked => { root.delete_item(idx); } }
                                                 }
                                             }
@@ -933,7 +1264,7 @@ export component SettingsWindow inherits Window {
                                         // Ligne 2 : Chemin / Cible
                                         Text {
                                             text: itm.target;
-                                            font-size: 10px;
+                                            font-size: 9px;
                                             color: #64748b;
                                             overflow: elide;
                                         }
@@ -943,7 +1274,7 @@ export component SettingsWindow inherits Window {
                         }
                     }
 
-                    // Édition directe des champs de l'item sélectionné (disposé en dessous, comme pour les conteneurs)
+                    // Édition directe des champs de l'item sélectionné (ventilée sur la largeur)
                     Rectangle {
                         background: #0f172a;
                         border-radius: 8px;
@@ -951,16 +1282,17 @@ export component SettingsWindow inherits Window {
                         border-color: #334155;
 
                         VerticalLayout {
-                            padding: 8px;
-                            spacing: 5px;
+                            padding: 10px;
+                            spacing: 8px;
 
+                            // Barre d'en-tête de l'éditeur
                             HorizontalLayout {
                                 alignment: space-between;
                                 Text {
                                     text: root.selected_item_index >= 0 ? "Éditer le raccourci sélectionné :" : "Nouveau raccourci :";
-                                    font-size: 11px;
-                                    color: #94a3b8;
-                                    font-weight: 600;
+                                    font-size: 12px;
+                                    color: #93c5fd;
+                                    font-weight: 700;
                                     vertical-alignment: center;
                                 }
                                 Button {
@@ -969,132 +1301,205 @@ export component SettingsWindow inherits Window {
                                 }
                             }
 
-                            // Nom et Icône
+                            // Ligne 1 ventilée : Nom (gauche) & Cible (droite)
                             HorizontalLayout {
-                                spacing: 6px;
-                                LineEdit {
-                                    text <=> root.item_edit_icon_value;
-                                    placeholder-text: "Icône";
-                                    width: 44px;
-                                    edited => { root.save_item_editor(); }
-                                }
-                                LineEdit {
-                                    text <=> root.item_edit_name;
-                                    placeholder-text: "Nom du raccourci";
+                                spacing: 12px;
+
+                                // Bloc Nom
+                                HorizontalLayout {
                                     horizontal-stretch: 1;
-                                    edited => { root.save_item_editor(); }
-                                }
-                            }
-
-                            // Cible / Chemin avec bouton Parcourir
-                            HorizontalLayout {
-                                spacing: 6px;
-                                LineEdit {
-                                    text <=> root.item_edit_target;
-                                    placeholder-text: "Cible (exécutable, dossier, URL)...";
-                                    horizontal-stretch: 1;
-                                    edited => { root.save_item_editor(); }
-                                }
-                                Button {
-                                    text: "📁 Parcourir";
-                                    clicked => { root.browse_item_target(); }
-                                }
-                            }
-
-                            // Conteneur et Colonne de destination
-                            HorizontalLayout {
-                                spacing: 6px;
-                                Text { text: "Conteneur :"; font-size: 11px; color: #94a3b8; vertical-alignment: center; width: 65px; }
-                                ComboBox {
-                                    model: root.container_names;
-                                    current-index <=> root.item_target_container_idx;
-                                    horizontal-stretch: 1;
-                                    selected => { root.save_item_editor(); }
-                                }
-                                Text { text: "Colonne :"; font-size: 11px; color: #94a3b8; vertical-alignment: center; width: 50px; }
-                                ComboBox {
-                                    model: root.available_item_columns;
-                                    current-index <=> root.item_edit_column;
-                                    width: 105px;
-                                    selected => { root.save_item_editor(); }
-                                }
-                            }
-
-                            // Couleurs Fond et Texte de l'item avec pastille et pipette d'écran
-                            HorizontalLayout {
-                                spacing: 5px;
-                                alignment: center;
-
-                                Text { text: "Fond :"; font-size: 10px; color: #cbd5e1; font-weight: 600; vertical-alignment: center; width: 30px; }
-                                Rectangle {
-                                    width: 24px; height: 22px; border-radius: 4px;
-                                    background: root.item_edit_bg != "" ? root.item_edit_bg_col : #1e293b;
-                                    border-width: 1.5px; border-color: root.item_edit_bg != "" ? #ffffffaa : #475569;
-                                    clip: true;
-                                    if root.item_edit_bg == "" : Text {
-                                        text: "Auto"; font-size: 8px; color: #94a3b8;
-                                        horizontal-alignment: center; vertical-alignment: center;
+                                    spacing: 5px;
+                                    alignment: center;
+                                    Text { text: "Nom :"; font-size: 10px; color: #cbd5e1; width: 38px; vertical-alignment: center; }
+                                    LineEdit {
+                                        text <=> root.item_edit_name;
+                                        placeholder-text: "Nom du raccourci (ex: Google Chrome...)";
+                                        horizontal-stretch: 1;
+                                        edited => { root.save_item_editor(); }
                                     }
-                                    TouchArea { mouse-cursor: pointer; clicked => { root.pick_item_bg_color(); } }
-                                }
-                                Rectangle {
-                                    width: 24px; height: 22px; border-radius: 4px;
-                                    background: bg_pip_ibg.has_hover ? #475569 : #334155;
-                                    border-width: 1px; border-color: #64748b;
-                                    Text { text: "🧪"; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
-                                    bg_pip_ibg := TouchArea { mouse-cursor: pointer; clicked => { root.eyedropper_item_bg(); } }
-                                }
-                                LineEdit {
-                                    text <=> root.item_edit_bg;
-                                    placeholder-text: "Défaut";
-                                    horizontal-stretch: 1;
-                                    edited => { root.item_bg_text_changed(); }
-                                }
-
-                                Text { text: "Texte :"; font-size: 10px; color: #cbd5e1; font-weight: 600; vertical-alignment: center; width: 34px; }
-                                Rectangle {
-                                    width: 24px; height: 22px; border-radius: 4px;
-                                    background: root.item_edit_text != "" ? root.item_edit_text_col : #f8fafc;
-                                    border-width: 1.5px; border-color: root.item_edit_text != "" ? #ffffffaa : #475569;
-                                    clip: true;
-                                    if root.item_edit_text == "" : Text {
-                                        text: "Auto"; font-size: 8px; color: #475569;
-                                        horizontal-alignment: center; vertical-alignment: center;
+                                    HelpTooltip {
+                                        text: "Nom de l'application ou action affiché dans le menu déroulant.";
+                                        example: "Google Chrome, Terminal, Calculatrice";
                                     }
-                                    TouchArea { mouse-cursor: pointer; clicked => { root.pick_item_text_color(); } }
                                 }
-                                Rectangle {
-                                    width: 24px; height: 22px; border-radius: 4px;
-                                    background: bg_pip_itxt.has_hover ? #475569 : #334155;
-                                    border-width: 1px; border-color: #64748b;
-                                    Text { text: "🧪"; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
-                                    bg_pip_itxt := TouchArea { mouse-cursor: pointer; clicked => { root.eyedropper_item_text(); } }
-                                }
-                                LineEdit {
-                                    text <=> root.item_edit_text;
-                                    placeholder-text: "Défaut";
+
+                                // Bloc Cible
+                                HorizontalLayout {
                                     horizontal-stretch: 1;
-                                    edited => { root.item_text_changed(); }
+                                    spacing: 5px;
+                                    alignment: center;
+                                    Text { text: "Cible :"; font-size: 10px; color: #cbd5e1; width: 38px; vertical-alignment: center; }
+                                    LineEdit {
+                                        text <=> root.item_edit_target;
+                                        placeholder-text: "C:\\... ou URL https://...";
+                                        horizontal-stretch: 1;
+                                        edited => { root.save_item_editor(); }
+                                    }
+                                    Button {
+                                        text: "📁 Parcourir";
+                                        clicked => { root.browse_item_target(); }
+                                    }
+                                    HelpTooltip {
+                                        text: "Chemin de l'exécutable (.exe), raccourci (.lnk), dossier ou adresse web. Parcourir extrait automatiquement l'icône !";
+                                        example: "C:\\Windows\\explorer.exe ou https://google.com";
+                                    }
                                 }
                             }
 
-                            // Raccourci Dédié de l'item
+                            // Ligne 2 ventilée : Icône (gauche) & Ranger dans (droite)
                             HorizontalLayout {
-                                alignment: space-between;
-                                Text { text: "Raccourci Dédié :"; font-size: 10px; color: #94a3b8; vertical-alignment: center; }
-                                ComboBox {
-                                    model: ["", "Space", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Insert", "Delete", "Home", "End", "PageUp", "PageDown", "PrintScreen", "Pause", "ScrollLock", "Tab", "Escape", "Enter", "Backspace", "NumLock", "Caps", "Up", "Down", "Left", "Right", "Numpad0", "Numpad1", "Numpad2", "Numpad3", "Numpad4", "Numpad5", "Numpad6", "Numpad7", "Numpad8", "Numpad9", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
-                                    current-value <=> root.item_edit_hotkey_key;
-                                    selected => { root.save_item_editor(); }
-                                    width: 100px;
+                                spacing: 12px;
+
+                                // Bloc Icône
+                                HorizontalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 5px;
+                                    alignment: center;
+                                    Text { text: "Icône :"; font-size: 10px; color: #cbd5e1; width: 38px; vertical-alignment: center; }
+                                    
+                                    // Aperçu visuel de l'icône
+                                    Rectangle {
+                                        width: 26px; height: 26px;
+                                        background: #1e293b;
+                                        border-radius: 4px;
+                                        border-width: 1px;
+                                        border-color: #38bdf888;
+                                        clip: true;
+                                        if root.item_edit_icon_type == "extracted" : Image {
+                                            source: root.item_edit_icon_image;
+                                            width: 20px;
+                                            height: 20px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                        if root.item_edit_icon_type != "extracted" : Text {
+                                            text: root.item_edit_icon_value != "" ? root.item_edit_icon_value : "🚀";
+                                            font-size: 15px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    if root.item_edit_icon_type != "extracted" : LineEdit {
+                                        text <=> root.item_edit_icon_value;
+                                        placeholder-text: "Emoji (ex: 🚀)";
+                                        horizontal-stretch: 1;
+                                        edited => { root.save_item_editor(); }
+                                    }
+
+                                    Button {
+                                        text: root.item_edit_icon_type == "extracted" ? "🖼️ .exe" : "🖼️ .exe...";
+                                        clicked => { root.browse_item_icon_file(); }
+                                    }
+
+                                    if root.item_edit_icon_type == "extracted" : Button {
+                                        text: "😀 Emoji";
+                                        clicked => {
+                                            root.item_edit_icon_type = "emoji";
+                                            if root.item_edit_icon_value == "" { root.item_edit_icon_value = "🚀"; }
+                                            root.save_item_editor();
+                                        }
+                                    }
+
+                                    HelpTooltip {
+                                        text: "Icône de ce raccourci. Extraite automatiquement lors de la sélection du fichier cible, ou choisie manuellement via .exe ou emoji.";
+                                        example: "🚀 ou calc.exe";
+                                    }
+                                }
+
+                                // Bloc Destination & Colonne (Hiérarchie)
+                                HorizontalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 5px;
+                                    alignment: center;
+                                    Text { text: "Ranger :"; font-size: 10px; color: #cbd5e1; width: 44px; vertical-alignment: center; }
+                                    ComboBox {
+                                        model: root.container_names;
+                                        current-index <=> root.item_target_container_idx;
+                                        horizontal-stretch: 1;
+                                        selected => { root.save_item_editor(); }
+                                    }
+                                    Text { text: "Col :"; font-size: 10px; color: #cbd5e1; vertical-alignment: center; }
+                                    ComboBox {
+                                        model: root.available_item_columns;
+                                        current-index <=> root.item_edit_column;
+                                        width: 85px;
+                                        selected => { root.save_item_editor(); }
+                                    }
+                                    HelpTooltip {
+                                        text: "Déplacez ce raccourci vers un autre conteneur ou vers une autre colonne dans le menu.";
+                                        example: "Conteneur 'Système', Colonne 2";
+                                    }
                                 }
                             }
+
+                            // Ligne 3 ventilée : Couleurs Fond & Texte (gauche) & Raccourci Dédié (droite)
                             HorizontalLayout {
-                                spacing: 6px;
-                                CheckBox { text: "Ctrl"; checked <=> root.item_edit_mod_ctrl; toggled => { root.save_item_editor(); } }
-                                CheckBox { text: "Alt"; checked <=> root.item_edit_mod_alt; toggled => { root.save_item_editor(); } }
-                                CheckBox { text: "Shift"; checked <=> root.item_edit_mod_shift; toggled => { root.save_item_editor(); } }
-                                CheckBox { text: "Win"; checked <=> root.item_edit_mod_win; toggled => { root.save_item_editor(); } }
+                                spacing: 12px;
+
+                                // Bloc Couleurs Fond & Texte
+                                HorizontalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 4px;
+                                    alignment: center;
+
+                                    Text { text: "Fond :"; font-size: 10px; color: #cbd5e1; width: 32px; vertical-alignment: center; }
+                                    Rectangle {
+                                        width: 22px; height: 20px; border-radius: 4px;
+                                        background: root.item_edit_bg != "" ? root.item_edit_bg_col : #1e293b;
+                                        border-width: 1px; border-color: root.item_edit_bg != "" ? #ffffffaa : #475569;
+                                        clip: true;
+                                        TouchArea { mouse-cursor: pointer; clicked => { root.pick_item_bg_color(); } }
+                                    }
+                                    LineEdit {
+                                        text <=> root.item_edit_bg;
+                                        placeholder-text: "Défaut";
+                                        horizontal-stretch: 1;
+                                        edited => { root.item_bg_text_changed(); }
+                                    }
+
+                                    Text { text: "Texte :"; font-size: 10px; color: #cbd5e1; width: 34px; vertical-alignment: center; }
+                                    Rectangle {
+                                        width: 22px; height: 20px; border-radius: 4px;
+                                        background: root.item_edit_text != "" ? root.item_edit_text_col : #f8fafc;
+                                        border-width: 1px; border-color: root.item_edit_text != "" ? #ffffffaa : #475569;
+                                        clip: true;
+                                        TouchArea { mouse-cursor: pointer; clicked => { root.pick_item_text_color(); } }
+                                    }
+                                    LineEdit {
+                                        text <=> root.item_edit_text;
+                                        placeholder-text: "Défaut";
+                                        horizontal-stretch: 1;
+                                        edited => { root.item_text_changed(); }
+                                    }
+
+                                    HelpTooltip {
+                                        text: "Couleur personnalisée de survol et de texte pour cet item spécifique dans le menu déroulant.";
+                                        example: "#2563eb";
+                                    }
+                                }
+
+                                // Bloc Raccourci Dédié
+                                HorizontalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 4px;
+                                    alignment: center;
+                                    Text { text: "Raccourci :"; font-size: 10px; color: #94a3b8; width: 55px; vertical-alignment: center; }
+                                    ComboBox {
+                                        model: ["", "Space", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Insert", "Delete", "Home", "End", "PageUp", "PageDown", "PrintScreen", "Pause", "ScrollLock", "Tab", "Escape", "Enter", "Backspace", "NumLock", "Caps", "Up", "Down", "Left", "Right", "Numpad0", "Numpad1", "Numpad2", "Numpad3", "Numpad4", "Numpad5", "Numpad6", "Numpad7", "Numpad8", "Numpad9", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
+                                        current-value <=> root.item_edit_hotkey_key;
+                                        selected => { root.save_item_editor(); }
+                                        horizontal-stretch: 1;
+                                    }
+                                    CheckBox { text: "Ctrl"; checked <=> root.item_edit_mod_ctrl; toggled => { root.save_item_editor(); } }
+                                    CheckBox { text: "Alt"; checked <=> root.item_edit_mod_alt; toggled => { root.save_item_editor(); } }
+                                    CheckBox { text: "Shift"; checked <=> root.item_edit_mod_shift; toggled => { root.save_item_editor(); } }
+                                    CheckBox { text: "Win"; checked <=> root.item_edit_mod_win; toggled => { root.save_item_editor(); } }
+                                    HelpTooltip {
+                                        text: "Raccourci clavier global dédié pour lancer immédiatement cette application de n'importe où.";
+                                        example: "Ctrl + Alt + C";
+                                    }
+                                }
                             }
                         }
                     }
@@ -1129,7 +1534,7 @@ export component SettingsWindow inherits Window {
                         }
                         Rectangle {
                             width: 26px; height: 24px; border-radius: 4px;
-                            background: bg_pip_bbg.has_hover ? #475569 : #334155;
+                            background: bg_pip_bbg.has-hover ? #475569 : #334155;
                             border-width: 1px; border-color: #64748b;
                             Text { text: "🧪"; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
                             bg_pip_bbg := TouchArea { mouse-cursor: pointer; clicked => { root.eyedropper_bar_bg(); } }
@@ -1139,6 +1544,10 @@ export component SettingsWindow inherits Window {
                             placeholder-text: "#0f172af8";
                             horizontal-stretch: 1;
                             edited => { root.bar_bg_text_changed(); }
+                        }
+                        HelpTooltip {
+                            text: "Couleur d'arrière-plan du bandeau horizontal (supporte la transparence avec #RRGGBBAA).";
+                            example: "#0f172af8 ou #1e293b";
                         }
                     }
 
@@ -1154,7 +1563,7 @@ export component SettingsWindow inherits Window {
                         }
                         Rectangle {
                             width: 26px; height: 24px; border-radius: 4px;
-                            background: bg_pip_btxt.has_hover ? #475569 : #334155;
+                            background: bg_pip_btxt.has-hover ? #475569 : #334155;
                             border-width: 1px; border-color: #64748b;
                             Text { text: "🧪"; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
                             bg_pip_btxt := TouchArea { mouse-cursor: pointer; clicked => { root.eyedropper_bar_text(); } }
@@ -1164,6 +1573,10 @@ export component SettingsWindow inherits Window {
                             placeholder-text: "#f8fafc";
                             horizontal-stretch: 1;
                             edited => { root.bar_text_text_changed(); }
+                        }
+                        HelpTooltip {
+                            text: "Couleur principale du texte affiché sur la barre.";
+                            example: "#f8fafc";
                         }
                     }
 
@@ -1204,6 +1617,10 @@ export component SettingsWindow inherits Window {
                                 if val == "🌟 Surbrillance Classique (Pleine)" { root.pref_dropdown_hover_style = "Highlight"; }
                             }
                         }
+                        HelpTooltip {
+                            text: "Animation visuelle affichée lors du survol d'un raccourci dans un menu déroulant.";
+                            example: "Lueur Néon / Halo, Surbrillance...";
+                        }
                     }
 
                     // Couleur du survol
@@ -1214,6 +1631,10 @@ export component SettingsWindow inherits Window {
                             text <=> root.pref_dropdown_hover_color;
                             placeholder-text: "#2563eb";
                             horizontal-stretch: 1;
+                        }
+                        HelpTooltip {
+                            text: "Couleur principale d'accentuation appliquée sur l'animation de survol.";
+                            example: "#2563eb ou #06b6d4";
                         }
                     }
 
@@ -1401,6 +1822,10 @@ export component SettingsWindow inherits Window {
                                 if val == "Flottant (Floating)" { root.pref_position = "Floating"; }
                             }
                         }
+                        HelpTooltip {
+                            text: "Position du lanceur sur votre écran (en haut, en bas ou en barre flottante déplaçable).";
+                            example: "Haut d'écran (Top)";
+                        }
                     }
 
                     // Alignement des conteneurs
@@ -1416,6 +1841,10 @@ export component SettingsWindow inherits Window {
                                 if val == "Aligné à Droite" { root.pref_containers_align = "Right"; }
                             }
                         }
+                        HelpTooltip {
+                            text: "Alignement horizontal des conteneurs sur les lignes du bandeau.";
+                            example: "Centré ou Aligné à Gauche";
+                        }
                     }
 
                     // Hauteur du bandeau
@@ -1427,6 +1856,10 @@ export component SettingsWindow inherits Window {
                             maximum: 70;
                             value <=> root.pref_bar_h;
                             horizontal-stretch: 1;
+                        }
+                        HelpTooltip {
+                            text: "Hauteur en pixels de la barre horizontale principale.";
+                            example: "46 px";
                         }
                     }
 
@@ -1440,6 +1873,10 @@ export component SettingsWindow inherits Window {
                             value <=> root.pref_item_h;
                             horizontal-stretch: 1;
                         }
+                        HelpTooltip {
+                            text: "Hauteur en pixels des éléments dans les menus déroulants.";
+                            example: "36 px";
+                        }
                     }
 
                     // Taille globale des icônes
@@ -1451,6 +1888,10 @@ export component SettingsWindow inherits Window {
                             maximum: 48;
                             value <=> root.pref_icon_sz;
                             horizontal-stretch: 1;
+                        }
+                        HelpTooltip {
+                            text: "Dimension en pixels des icônes affichées dans la barre et les menus.";
+                            example: "18 px ou 24 px";
                         }
                     }
 
@@ -1464,6 +1905,10 @@ export component SettingsWindow inherits Window {
                             value <=> root.pref_cont_font;
                             horizontal-stretch: 1;
                         }
+                        HelpTooltip {
+                            text: "Taille de police en pixels pour les titres des conteneurs sur la barre.";
+                            example: "13 px";
+                        }
                     }
 
                     // Taille police items
@@ -1475,6 +1920,10 @@ export component SettingsWindow inherits Window {
                             maximum: 20;
                             value <=> root.pref_item_font;
                             horizontal-stretch: 1;
+                        }
+                        HelpTooltip {
+                            text: "Taille de police en pixels pour les noms de raccourcis dans les menus.";
+                            example: "11 px";
                         }
                     }
 
@@ -1494,20 +1943,38 @@ export component SettingsWindow inherits Window {
                             model: ["Space", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Insert", "Delete", "Home", "End", "PageUp", "PageDown", "PrintScreen", "Pause", "ScrollLock", "Tab", "Escape", "Enter", "Backspace", "NumLock", "Caps", "Up", "Down", "Left", "Right", "Numpad0", "Numpad1", "Numpad2", "Numpad3", "Numpad4", "Numpad5", "Numpad6", "Numpad7", "Numpad8", "Numpad9", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
                             current-value <=> root.pref_hotkey_key;
                         }
+                        HelpTooltip {
+                            text: "Combinaison de touches mondiale pour afficher ou masquer le lanceur instantanément.";
+                            example: "Ctrl + Space";
+                        }
                     }
 
                     Rectangle { height: 1px; background: #334155; }
 
                     Text { text: "🛡️ Comportement Système & Bureau"; font-size: 15px; font-weight: 800; color: #93c5fd; }
 
-                    CheckBox {
-                        text: "Lancer automatiquement au démarrage de Windows (Systray)";
-                        checked <=> root.pref_autostart;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        CheckBox {
+                            text: "Lancer automatiquement au démarrage de Windows (Systray)";
+                            checked <=> root.pref_autostart;
+                        }
+                        HelpTooltip {
+                            text: "Active le démarrage en arrière-plan à l'ouverture de votre session Windows.";
+                            example: "Coché";
+                        }
                     }
 
-                    CheckBox {
-                        text: "Persistance sur le Bureau après Win + D (style Fences, sous les fenêtres actives)";
-                        checked <=> root.pref_stay_on_top;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        CheckBox {
+                            text: "Persistance sur le Bureau après Win + D (style Fences, sous les fenêtres actives)";
+                            checked <=> root.pref_stay_on_top;
+                        }
+                        HelpTooltip {
+                            text: "Garde le lanceur visible sur le fond d'écran même après un retour au Bureau (Windows + D).";
+                            example: "Coché";
+                        }
                     }
                 }
             }

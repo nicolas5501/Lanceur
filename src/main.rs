@@ -240,11 +240,32 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
                 let cont_bg = parse_hex_color(&cont.bg_color, Color::from_argb_u8(0, 0, 0, 0));
                 let cont_text = parse_hex_color(&cont.text_color, Color::from_argb_u8(0, 0, 0, 0));
 
+                let mut cont_icon_img = slint::Image::default();
+                let mut cont_icon_type = cont.icon_type.clone();
+                if cont_icon_type == "extracted" {
+                    let path_to_extract = if !cont.icon_path.is_empty() {
+                        &cont.icon_path
+                    } else {
+                        &cont.icon
+                    };
+                    if let Some(p) = win32_utils::win32::extract_and_cache_icon(path_to_extract, &cache) {
+                        if let Ok(img) = slint::Image::load_from_path(&p) {
+                            cont_icon_img = img;
+                        } else {
+                            cont_icon_type = "emoji".to_string();
+                        }
+                    } else {
+                        cont_icon_type = "emoji".to_string();
+                    }
+                }
+
                 row_containers.push(BarContainerData {
                     flat_idx: flat_idx as i32,
                     id: cont.id.clone().into(),
                     name: cont.name.clone().into(),
                     icon: cont.icon.clone().into(),
+                    icon_type: cont_icon_type.into(),
+                    icon_image: cont_icon_img,
                     width_val: cont.width,
                     display_mode: cont.display_mode.clone().into(),
                     bg_color: cont_bg,
@@ -367,13 +388,26 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
     let mut cont_summaries: Vec<ContainerItemSummary> = Vec::new();
     let mut cont_names: Vec<SharedString> = Vec::new();
 
+    let cache = cache_dir();
+
     for cont in &cfg.containers {
         cont_names.push(cont.name.clone().into());
         let hk = format_hotkey_display(&cont.hotkey_modifiers, &cont.hotkey_key);
+        let mut cont_img = slint::Image::default();
+        if cont.icon_type == "extracted" {
+            let path_to_extract = if !cont.icon_path.is_empty() { &cont.icon_path } else { &cont.icon };
+            if let Some(p) = win32_utils::win32::extract_and_cache_icon(path_to_extract, &cache) {
+                if let Ok(img) = slint::Image::load_from_path(&p) {
+                    cont_img = img;
+                }
+            }
+        }
         cont_summaries.push(ContainerItemSummary {
             id: cont.id.clone().into(),
             name: cont.name.clone().into(),
             icon: cont.icon.clone().into(),
+            icon_type: cont.icon_type.clone().into(),
+            icon_image: cont_img,
             width_val: cont.width,
             display_mode: cont.display_mode.clone().into(),
             bg_color: cont.bg_color.clone().into(),
@@ -396,12 +430,31 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
     settings_win.set_selected_container_index(safe_idx as i32);
 
     if let Some(cont) = cfg.containers.get(safe_idx) {
-        settings_win.set_edit_container_name(cont.name.clone().into());
-        settings_win.set_edit_container_icon(cont.icon.clone().into());
+        if settings_win.get_edit_container_name().as_str() != cont.name {
+            settings_win.set_edit_container_name(cont.name.clone().into());
+        }
+        if settings_win.get_edit_container_icon().as_str() != cont.icon {
+            settings_win.set_edit_container_icon(cont.icon.clone().into());
+        }
+        settings_win.set_edit_container_icon_type(cont.icon_type.clone().into());
+        let mut cont_edit_img = slint::Image::default();
+        if cont.icon_type == "extracted" {
+            let p_ext = if !cont.icon_path.is_empty() { &cont.icon_path } else { &cont.icon };
+            if let Some(p) = win32_utils::win32::extract_and_cache_icon(p_ext, &cache) {
+                if let Ok(img) = slint::Image::load_from_path(&p) {
+                    cont_edit_img = img;
+                }
+            }
+        }
+        settings_win.set_edit_container_icon_image(cont_edit_img);
         settings_win.set_edit_container_width(cont.width);
         settings_win.set_edit_container_display_mode(cont.display_mode.clone().into());
-        settings_win.set_edit_container_bg(cont.bg_color.clone().into());
-        settings_win.set_edit_container_text(cont.text_color.clone().into());
+        if settings_win.get_edit_container_bg().as_str() != cont.bg_color {
+            settings_win.set_edit_container_bg(cont.bg_color.clone().into());
+        }
+        if settings_win.get_edit_container_text().as_str() != cont.text_color {
+            settings_win.set_edit_container_text(cont.text_color.clone().into());
+        }
         let c_bg_col = parse_hex_color(&cont.bg_color, Color::from_argb_u8(255, 30, 41, 59));
         let c_txt_col = parse_hex_color(&cont.text_color, Color::from_argb_u8(255, 248, 250, 252));
         settings_win.set_edit_container_bg_col(c_bg_col);
@@ -426,12 +479,21 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
         for itm in &cont.items {
             let hk = format_hotkey_display(&itm.hotkey_modifiers, &itm.hotkey_key);
             let col = itm.column.min(num_cols - 1);
+            let mut itm_img = slint::Image::default();
+            if itm.icon_type == "extracted" {
+                if let Some(p) = win32_utils::win32::extract_and_cache_icon(&itm.target, &cache) {
+                    if let Ok(img) = slint::Image::load_from_path(&p) {
+                        itm_img = img;
+                    }
+                }
+            }
             items_detail.push(ItemDetailData {
                 id: itm.id.clone().into(),
                 name: itm.name.clone().into(),
                 target: itm.target.clone().into(),
                 icon_type: itm.icon_type.clone().into(),
                 icon_value: if itm.icon_type == "extracted" { "🖼️".into() } else { itm.icon_value.clone().into() },
+                icon_image: itm_img,
                 container_id: cont.id.clone().into(),
                 bg_color: itm.bg_color.clone().into(),
                 text_color: itm.text_color.clone().into(),
@@ -453,12 +515,31 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
 
         if safe_item_idx >= 0 {
             if let Some(itm) = cont.items.get(safe_item_idx as usize) {
-                settings_win.set_item_edit_name(itm.name.clone().into());
-                settings_win.set_item_edit_target(itm.target.clone().into());
+                if settings_win.get_item_edit_name().as_str() != itm.name {
+                    settings_win.set_item_edit_name(itm.name.clone().into());
+                }
+                if settings_win.get_item_edit_target().as_str() != itm.target {
+                    settings_win.set_item_edit_target(itm.target.clone().into());
+                }
                 settings_win.set_item_edit_icon_type(itm.icon_type.clone().into());
-                settings_win.set_item_edit_icon_value(itm.icon_value.clone().into());
-                settings_win.set_item_edit_bg(itm.bg_color.clone().into());
-                settings_win.set_item_edit_text(itm.text_color.clone().into());
+                if settings_win.get_item_edit_icon_value().as_str() != itm.icon_value {
+                    settings_win.set_item_edit_icon_value(itm.icon_value.clone().into());
+                }
+                let mut itm_edit_img = slint::Image::default();
+                if itm.icon_type == "extracted" {
+                    if let Some(p) = win32_utils::win32::extract_and_cache_icon(&itm.target, &cache) {
+                        if let Ok(img) = slint::Image::load_from_path(&p) {
+                            itm_edit_img = img;
+                        }
+                    }
+                }
+                settings_win.set_item_edit_icon_image(itm_edit_img);
+                if settings_win.get_item_edit_bg().as_str() != itm.bg_color {
+                    settings_win.set_item_edit_bg(itm.bg_color.clone().into());
+                }
+                if settings_win.get_item_edit_text().as_str() != itm.text_color {
+                    settings_win.set_item_edit_text(itm.text_color.clone().into());
+                }
                 let i_bg_col = parse_hex_color(&itm.bg_color, Color::from_argb_u8(255, 30, 41, 59));
                 let i_txt_col = parse_hex_color(&itm.text_color, Color::from_argb_u8(255, 248, 250, 252));
                 settings_win.set_item_edit_bg_col(i_bg_col);
@@ -476,6 +557,7 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
             settings_win.set_item_edit_target("".into());
             settings_win.set_item_edit_icon_type("emoji".into());
             settings_win.set_item_edit_icon_value("🚀".into());
+            settings_win.set_item_edit_icon_image(slint::Image::default());
             settings_win.set_item_edit_bg("".into());
             settings_win.set_item_edit_text("".into());
             settings_win.set_item_edit_bg_col(Color::from_argb_u8(255, 30, 41, 59));
@@ -553,6 +635,8 @@ fn add_dropped_file_to_container(file_path: &str, target_cont_idx: usize, config
             id: generate_id(),
             name: "Raccourcis".to_string(),
             icon: "📌".to_string(),
+            icon_type: "emoji".to_string(),
+            icon_path: String::new(),
             width: 0.0,
             order: 0,
             display_mode: "Both".to_string(),
@@ -1555,6 +1639,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     id: generate_id(),
                     name: format!("Nouveau {}", cfg.containers.len() + 1),
                     icon: "📦".to_string(),
+                    icon_type: "emoji".to_string(),
+                    icon_path: String::new(),
                     width: 0.0,
                     order: cfg.containers.len(),
                     display_mode: "Both".to_string(),
@@ -1668,6 +1754,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(cont) = cfg.containers.get_mut(idx) {
                     cont.name = sui.get_edit_container_name().to_string();
                     cont.icon = sui.get_edit_container_icon().to_string();
+                    cont.icon_type = sui.get_edit_container_icon_type().to_string();
                     cont.width = sui.get_edit_container_width();
                     cont.display_mode = sui.get_edit_container_display_mode().to_string();
                     cont.bg_color = sui.get_edit_container_bg().to_string();
@@ -1704,6 +1791,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     refresh_settings_ui(&sui, &cfg, idx);
                     if let Some(bui) = bar_weak.upgrade() {
                         refresh_bar_ui(&bui, &cfg);
+                    }
+                }
+            }
+        });
+    }
+
+    // 5bis. Parcourir fichier pour extraire l'icône d'un conteneur
+    {
+        let settings_weak = settings_window.as_weak();
+        let bar_weak = bar_window.as_weak();
+        let cfg_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+
+        settings_window.on_browse_container_icon_file(move || {
+            if let Some(sui) = settings_weak.upgrade() {
+                if let Some(file) = rfd::FileDialog::new()
+                    .add_filter("Exécutables & Icônes (*.exe, *.lnk, *.ico, *.dll)", &["exe", "lnk", "ico", "dll"])
+                    .pick_file() 
+                {
+                    let path_str = file.to_string_lossy().to_string();
+                    let cache = cache_dir();
+                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(&path_str, &cache) {
+                        if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
+                            sui.set_edit_container_icon_type("extracted".into());
+                            sui.set_edit_container_icon_image(img);
+                            let idx = sel_idx.load(Ordering::SeqCst);
+                            let mut cfg = cfg_arc.lock().unwrap();
+                            if let Some(cont) = cfg.containers.get_mut(idx) {
+                                cont.icon_type = "extracted".to_string();
+                                cont.icon_path = path_str.clone();
+                                save_config(&cfg);
+                                if let Some(bui) = bar_weak.upgrade() {
+                                    refresh_bar_ui(&bui, &cfg);
+                                }
+                            }
+                            refresh_settings_ui(&sui, &cfg, idx);
+                        }
                     }
                 }
             }
@@ -1773,20 +1897,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // 7. Parcourir fichier pour cible d'item
+    // 7. Parcourir fichier pour cible d'item (avec extraction automatique d'icône)
     {
         let settings_weak = settings_window.as_weak();
         settings_window.on_browse_item_target(move || {
             if let Some(sui) = settings_weak.upgrade() {
                 if let Some(file) = rfd::FileDialog::new().pick_file() {
                     let path_str = file.to_string_lossy().to_string();
-                    sui.set_item_edit_target(path_str.into());
+                    sui.set_item_edit_target(path_str.clone().into());
                     if sui.get_item_edit_name().is_empty() {
                         if let Some(stem) = file.file_stem() {
                             sui.set_item_edit_name(stem.to_string_lossy().to_string().into());
                         }
                     }
+                    // Extraction automatique de l'icône de l'application visée
+                    let cache = cache_dir();
+                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(&path_str, &cache) {
+                        if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
+                            sui.set_item_edit_icon_type("extracted".into());
+                            sui.set_item_edit_icon_image(img);
+                        }
+                    }
                 }
+            }
+        });
+    }
+
+    // 7bis. Parcourir un fichier pour extraire une icône spécifique pour un item
+    {
+        let settings_weak = settings_window.as_weak();
+        settings_window.on_browse_item_icon_file(move || {
+            if let Some(sui) = settings_weak.upgrade() {
+                if let Some(file) = rfd::FileDialog::new()
+                    .add_filter("Exécutables & Icônes (*.exe, *.lnk, *.ico, *.dll)", &["exe", "lnk", "ico", "dll"])
+                    .pick_file() 
+                {
+                    let path_str = file.to_string_lossy().to_string();
+                    let cache = cache_dir();
+                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(&path_str, &cache) {
+                        if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
+                            sui.set_item_edit_icon_type("extracted".into());
+                            sui.set_item_edit_icon_image(img);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // 7ter. Filtrage par colonne dans la Zone 3 & 4
+    {
+        let settings_weak = settings_window.as_weak();
+        settings_window.on_select_column_filter(move |col_idx| {
+            if let Some(sui) = settings_weak.upgrade() {
+                sui.set_selected_column_filter(col_idx);
             }
         });
     }

@@ -884,33 +884,37 @@ pub mod win32 {
         }
     }
 
-    /// Extrait l'icône d'un fichier .exe, .ico ou .lnk et l'enregistre en cache PNG
-    pub fn extract_and_cache_icon(target_path: &str, cache_dir: &Path) -> Option<PathBuf> {
-        let p = Path::new(target_path);
-        let stem = p.file_stem()?.to_string_lossy();
-        let cache_file = cache_dir.join(format!("{}.png", stem));
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    pub struct SHFILEINFOW {
+        pub hIcon: HICON,
+        pub iIcon: i32,
+        pub dwAttributes: u32,
+        pub szDisplayName: [u16; 260],
+        pub szTypeName: [u16; 80],
+    }
 
-        if cache_file.exists() {
-            return Some(cache_file);
-        }
+    pub const SHGFI_ICON: u32 = 0x000000100;
+    pub const SHGFI_LARGEICON: u32 = 0x000000000;
+    pub const SHGFI_SMALLICON: u32 = 0x000000001;
 
+    unsafe extern "system" {
+        pub fn SHGetFileInfoW(
+            pszpath: *const u16,
+            dwfileattributes: u32,
+            psfi: *mut SHFILEINFOW,
+            cbfileinfo: u32,
+            uflags: u32,
+        ) -> usize;
+    }
+
+    /// Convertit un HICON Win32 en image RGBA et libère les ressources associées
+    pub unsafe fn hicon_to_rgba_image(hicon: HICON) -> Option<image::RgbaImage> {
         unsafe {
-            let wide_path = to_wide_null(target_path);
-            let mut hicon: HICON = std::ptr::null_mut();
-
-            ExtractIconExW(
-                wide_path.as_ptr(),
-                0,
-                &mut hicon,
-                std::ptr::null_mut(),
-                1,
-            );
-
             if hicon.is_null() {
                 return None;
             }
 
-            // Convertir HICON en image RGBA
             let mut icon_info: ICONINFO = std::mem::zeroed();
             if GetIconInfo(hicon, &mut icon_info) == 0 {
                 DestroyIcon(hicon);
@@ -971,11 +975,92 @@ pub mod win32 {
             DeleteDC(hdc);
             DestroyIcon(hicon);
 
-            if let Some(img) = image::RgbaImage::from_raw(width as u32, height as u32, raw_pixels) {
+            image::RgbaImage::from_raw(width as u32, height as u32, raw_pixels)
+        }
+    }
+
+    /// Extrait l'icône d'un fichier (.exe, .lnk, .ico, dossier, etc.) et l'enregistre en cache PNG
+    pub fn extract_and_cache_icon(target_path: &str, cache_dir: &Path) -> Option<PathBuf> {
+        let clean_path = target_path.trim().trim_matches('"');
+        if clean_path.is_empty() {
+            return None;
+        }
+
+        let p = Path::new(clean_path);
+        let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "icon".to_string());
+        
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(clean_path, &mut hasher);
+        let hash = std::hash::Hasher::finish(&hasher);
+
+        let cache_file = cache_dir.join(format!("{}_{:x}.png", stem, hash));
+        if cache_file.exists() {
+            return Some(cache_file);
+        }
+
+        let legacy_file = cache_dir.join(format!("{}.png", stem));
+        if legacy_file.exists() {
+            return Some(legacy_file);
+        }
+
+        unsafe {
+            let wide_path = to_wide_null(clean_path);
+
+            // 1. Essayer d'abord avec SHGetFileInfoW (résout .lnk, exe, dossiers, extensions associées)
+            let mut shfi: SHFILEINFOW = std::mem::zeroed();
+            let res = SHGetFileInfoW(
+                wide_path.as_ptr(),
+                0,
+                &mut shfi,
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_ICON | SHGFI_LARGEICON,
+            );
+
+            let mut hicon = if res != 0 && !shfi.hIcon.is_null() {
+                shfi.hIcon
+            } else {
+                std::ptr::null_mut()
+            };
+
+            // 2. Si non trouvé ou échec, essayer ExtractIconExW
+            if hicon.is_null() {
+                let mut ex_icon: HICON = std::ptr::null_mut();
+                ExtractIconExW(wide_path.as_ptr(), 0, &mut ex_icon, std::ptr::null_mut(), 1);
+                if !ex_icon.is_null() {
+                    hicon = ex_icon;
+                }
+            }
+
+            // 3. Si toujours nul et que c'est un nom court sans chemin (ex: calc.exe), chercher dans le PATH / System32
+            if hicon.is_null() && !clean_path.contains('\\') && !clean_path.contains('/') {
+                let sys_dir = "C:\\Windows\\System32\\";
+                let full = format!("{}{}", sys_dir, clean_path);
+                if Path::new(&full).exists() {
+                    let w_full = to_wide_null(&full);
+                    let mut shfi_sys: SHFILEINFOW = std::mem::zeroed();
+                    let res_sys = SHGetFileInfoW(
+                        w_full.as_ptr(),
+                        0,
+                        &mut shfi_sys,
+                        std::mem::size_of::<SHFILEINFOW>() as u32,
+                        SHGFI_ICON | SHGFI_LARGEICON,
+                    );
+                    if res_sys != 0 && !shfi_sys.hIcon.is_null() {
+                        hicon = shfi_sys.hIcon;
+                    }
+                }
+            }
+
+            if hicon.is_null() {
+                return None;
+            }
+
+            if let Some(img) = hicon_to_rgba_image(hicon) {
                 if img.save(&cache_file).is_ok() {
                     return Some(cache_file);
                 }
             }
+
             None
         }
     }
