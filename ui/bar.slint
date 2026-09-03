@@ -127,18 +127,25 @@ export component DropdownItemRow inherits Rectangle {
         animate x { duration: 100ms; easing: ease-out; }
         animate padding-left { duration: 120ms; easing: ease-out; }
 
-        if root.icon_type == "extracted" : Image {
-            source: root.icon_image;
-            width: root.icon_sz;
-            height: root.icon_sz;
-            image-fit: contain;
-            vertical-alignment: center;
-        }
+        Rectangle {
+            width: max(22px, root.icon_sz + 4px);
+            height: max(22px, root.icon_sz + 4px);
 
-        if root.icon_type != "extracted" : Text {
-            text: root.icon_emoji;
-            font-size: root.icon_sz;
-            vertical-alignment: center;
+            if root.icon_type == "extracted" : Image {
+                source: root.icon_image;
+                width: root.icon_sz;
+                height: root.icon_sz;
+                image-fit: contain;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            if root.icon_type != "extracted" : Text {
+                text: root.icon_emoji;
+                font-size: root.icon_sz;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
         }
 
         Text {
@@ -332,16 +339,25 @@ export component BarWindow inherits Window {
                                     spacing: 6px;
                                     alignment: center;
 
-                                    if cont.display_mode != "NameOnly" && cont.icon_type == "extracted" : Image {
-                                        source: cont.icon_image;
-                                        width: root.icon_sz;
-                                        height: root.icon_sz;
-                                    }
+                                    if cont.display_mode != "NameOnly" : Rectangle {
+                                        width: root.icon_sz + 2px;
+                                        height: root.icon_sz + 2px;
 
-                                    if cont.display_mode != "NameOnly" && cont.icon_type != "extracted" : Text {
-                                        text: cont.icon;
-                                        font-size: root.icon_sz;
-                                        vertical-alignment: center;
+                                        if cont.icon_type == "extracted" : Image {
+                                            source: cont.icon_image;
+                                            width: root.icon_sz;
+                                            height: root.icon_sz;
+                                            image-fit: contain;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+
+                                        if cont.icon_type != "extracted" : Text {
+                                            text: cont.icon;
+                                            font-size: root.icon_sz;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
                                     }
 
                                     if cont.display_mode != "IconOnly" : Text {

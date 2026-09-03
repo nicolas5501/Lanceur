@@ -143,11 +143,28 @@ pub fn generate_id() -> String {
 }
 
 pub fn config_path() -> PathBuf {
+    if PathBuf::from("launcher_config.json").exists() {
+        return PathBuf::from("launcher_config.json");
+    }
+    if let Ok(mut exe) = std::env::current_exe() {
+        exe.pop();
+        let p = exe.join("launcher_config.json");
+        if p.exists() {
+            return p;
+        }
+    }
     PathBuf::from("launcher_config.json")
 }
 
 pub fn cache_dir() -> PathBuf {
-    let dir = PathBuf::from("icon_cache");
+    let dir = if PathBuf::from("launcher_config.json").exists() || PathBuf::from("icon_cache").exists() {
+        PathBuf::from("icon_cache")
+    } else if let Ok(mut exe) = std::env::current_exe() {
+        exe.pop();
+        exe.join("icon_cache")
+    } else {
+        PathBuf::from("icon_cache")
+    };
     if !dir.exists() {
         let _ = fs::create_dir_all(&dir);
     }

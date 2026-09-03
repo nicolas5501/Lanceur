@@ -908,7 +908,61 @@ pub mod win32 {
         ) -> usize;
     }
 
-    /// Convertit un HICON Win32 en image RGBA et libère les ressources associées
+    /// Recherche et résolution du chemin réel d'un exécutable (.exe, .lnk, commande PATH, dossier Windows)
+    fn resolve_target_executable(raw_path: &str) -> Option<String> {
+        let trimmed = raw_path.trim().trim_matches('"');
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        // 1. Si le chemin existe directement
+        if Path::new(trimmed).exists() {
+            return Some(trimmed.to_string());
+        }
+
+        // 2. Si le chemin contient des arguments (ex: "C:\App\app.exe" --param)
+        if let Some((first, _)) = trimmed.split_once(' ') {
+            let candidate = first.trim_matches('"');
+            if Path::new(candidate).exists() {
+                return Some(candidate.to_string());
+            }
+        }
+
+        // 3. Nom court sans chemin (ex: explorer.exe, calc.exe, notepad.exe)
+        let filename = Path::new(trimmed)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(trimmed);
+
+        let standard_dirs = [
+            "C:\\Windows\\",
+            "C:\\Windows\\System32\\",
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\",
+        ];
+        for dir in &standard_dirs {
+            let candidate = format!("{}{}", dir, filename);
+            if Path::new(&candidate).exists() {
+                return Some(candidate);
+            }
+        }
+
+        // 4. Recherche dans les dossiers du PATH
+        if let Ok(path_var) = std::env::var("PATH") {
+            for dir in path_var.split(';') {
+                let trimmed_dir = dir.trim();
+                if !trimmed_dir.is_empty() {
+                    let candidate = Path::new(trimmed_dir).join(filename);
+                    if candidate.exists() {
+                        return Some(candidate.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Convertit un HICON Win32 en image RGBA et libère les ressources associées via DrawIconEx sur DIBSection 32-bit
     pub unsafe fn hicon_to_rgba_image(hicon: HICON) -> Option<image::RgbaImage> {
         unsafe {
             if hicon.is_null() {
@@ -921,24 +975,37 @@ pub mod win32 {
                 return None;
             }
 
-            let hdc = CreateCompatibleDC(std::ptr::null_mut());
-            let mut bmp: BITMAP = std::mem::zeroed();
-            GetObjectW(
-                icon_info.hbmColor,
-                std::mem::size_of::<BITMAP>() as i32,
-                &mut bmp as *mut _ as *mut _,
-            );
-
-            let width = bmp.bmWidth;
-            let height = bmp.bmHeight;
+            let mut width = 32i32;
+            let mut height = 32i32;
+            if !icon_info.hbmColor.is_null() {
+                let mut bmp: BITMAP = std::mem::zeroed();
+                if GetObjectW(
+                    icon_info.hbmColor,
+                    std::mem::size_of::<BITMAP>() as i32,
+                    &mut bmp as *mut _ as *mut _,
+                ) > 0 {
+                    width = bmp.bmWidth;
+                    height = bmp.bmHeight;
+                }
+            } else if !icon_info.hbmMask.is_null() {
+                let mut bmp: BITMAP = std::mem::zeroed();
+                if GetObjectW(
+                    icon_info.hbmMask,
+                    std::mem::size_of::<BITMAP>() as i32,
+                    &mut bmp as *mut _ as *mut _,
+                ) > 0 {
+                    width = bmp.bmWidth;
+                    height = bmp.bmHeight / 2;
+                }
+            }
 
             if width <= 0 || height <= 0 {
-                if !icon_info.hbmColor.is_null() { DeleteObject(icon_info.hbmColor); }
-                if !icon_info.hbmMask.is_null() { DeleteObject(icon_info.hbmMask); }
-                DeleteDC(hdc);
-                DestroyIcon(hicon);
-                return None;
+                width = 32;
+                height = 32;
             }
+
+            let hdc_screen = GetDC(std::ptr::null_mut());
+            let hdc_mem = CreateCompatibleDC(hdc_screen);
 
             let mut bi: BITMAPINFO = std::mem::zeroed();
             bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
@@ -948,31 +1015,80 @@ pub mod win32 {
             bi.bmiHeader.biBitCount = 32;
             bi.bmiHeader.biCompression = BI_RGB;
 
-            let mut raw_pixels: Vec<u8> = vec![0; (width * height * 4) as usize];
-            GetDIBits(
-                hdc,
-                icon_info.hbmColor,
-                0,
-                height as u32,
-                raw_pixels.as_mut_ptr() as *mut _,
-                &mut bi,
+            let mut p_bits: *mut std::ffi::c_void = std::ptr::null_mut();
+            let hbitmap = CreateDIBSection(
+                hdc_mem,
+                &bi,
                 DIB_RGB_COLORS,
+                &mut p_bits,
+                std::ptr::null_mut(),
+                0,
             );
 
-            // BGRX / BGRA -> RGBA
+            if hbitmap.is_null() || p_bits.is_null() {
+                if !icon_info.hbmColor.is_null() { DeleteObject(icon_info.hbmColor); }
+                if !icon_info.hbmMask.is_null() { DeleteObject(icon_info.hbmMask); }
+                DeleteDC(hdc_mem);
+                ReleaseDC(std::ptr::null_mut(), hdc_screen);
+                DestroyIcon(hicon);
+                return None;
+            }
+
+            let old_bmp = SelectObject(hdc_mem, hbitmap);
+
+            // Initialiser le buffer 32-bit en transparent absolu
+            std::ptr::write_bytes(p_bits as *mut u8, 0, (width * height * 4) as usize);
+
+            // Dessiner fidèlement l'icône sur le DIBSection (gère alpha 32-bit, masques et palettes)
+            DrawIconEx(
+                hdc_mem,
+                0,
+                0,
+                hicon,
+                width,
+                height,
+                0,
+                std::ptr::null_mut(),
+                DI_NORMAL,
+            );
+
+            SelectObject(hdc_mem, old_bmp);
+
+            let mut raw_pixels = vec![0u8; (width * height * 4) as usize];
+            std::ptr::copy_nonoverlapping(
+                p_bits as *const u8,
+                raw_pixels.as_mut_ptr(),
+                raw_pixels.len(),
+            );
+
+            // Détecter si l'icône fournit un canal alpha natif
+            let mut has_alpha = false;
+            for chunk in raw_pixels.chunks_exact(4) {
+                if chunk[3] > 0 {
+                    has_alpha = true;
+                    break;
+                }
+            }
+
+            // Convertir BGRA -> RGBA et attribuer l'opacité requise
             for chunk in raw_pixels.chunks_exact_mut(4) {
                 let b = chunk[0];
                 let r = chunk[2];
                 chunk[0] = r;
                 chunk[2] = b;
-                if chunk[3] == 0 && (chunk[0] > 0 || chunk[1] > 0 || chunk[2] > 0) {
-                    chunk[3] = 255;
+                if !has_alpha {
+                    if chunk[0] > 0 || chunk[1] > 0 || chunk[2] > 0 {
+                        chunk[3] = 255;
+                    }
                 }
             }
 
+            DeleteObject(hbitmap);
+            DeleteDC(hdc_mem);
+            ReleaseDC(std::ptr::null_mut(), hdc_screen);
+
             if !icon_info.hbmColor.is_null() { DeleteObject(icon_info.hbmColor); }
             if !icon_info.hbmMask.is_null() { DeleteObject(icon_info.hbmMask); }
-            DeleteDC(hdc);
             DestroyIcon(hicon);
 
             image::RgbaImage::from_raw(width as u32, height as u32, raw_pixels)
@@ -986,25 +1102,30 @@ pub mod win32 {
             return None;
         }
 
-        let p = Path::new(clean_path);
+        // Résoudre le véritable chemin du fichier si arguments ou nom court
+        let resolved = resolve_target_executable(clean_path);
+        let path_to_use = resolved.as_deref().unwrap_or(clean_path);
+
+        let p = Path::new(path_to_use);
         let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "icon".to_string());
-        
+
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(clean_path, &mut hasher);
+        std::hash::Hash::hash(path_to_use, &mut hasher);
         let hash = std::hash::Hasher::finish(&hasher);
 
+        let _ = std::fs::create_dir_all(cache_dir);
         let cache_file = cache_dir.join(format!("{}_{:x}.png", stem, hash));
-        if cache_file.exists() {
+        if cache_file.exists() && std::fs::metadata(&cache_file).map(|m| m.len() > 0).unwrap_or(false) {
             return Some(cache_file);
         }
 
         let legacy_file = cache_dir.join(format!("{}.png", stem));
-        if legacy_file.exists() {
+        if legacy_file.exists() && std::fs::metadata(&legacy_file).map(|m| m.len() > 0).unwrap_or(false) {
             return Some(legacy_file);
         }
 
         unsafe {
-            let wide_path = to_wide_null(clean_path);
+            let wide_path = to_wide_null(path_to_use);
 
             // 1. Essayer d'abord avec SHGetFileInfoW (résout .lnk, exe, dossiers, extensions associées)
             let mut shfi: SHFILEINFOW = std::mem::zeroed();
@@ -1028,26 +1149,6 @@ pub mod win32 {
                 ExtractIconExW(wide_path.as_ptr(), 0, &mut ex_icon, std::ptr::null_mut(), 1);
                 if !ex_icon.is_null() {
                     hicon = ex_icon;
-                }
-            }
-
-            // 3. Si toujours nul et que c'est un nom court sans chemin (ex: calc.exe), chercher dans le PATH / System32
-            if hicon.is_null() && !clean_path.contains('\\') && !clean_path.contains('/') {
-                let sys_dir = "C:\\Windows\\System32\\";
-                let full = format!("{}{}", sys_dir, clean_path);
-                if Path::new(&full).exists() {
-                    let w_full = to_wide_null(&full);
-                    let mut shfi_sys: SHFILEINFOW = std::mem::zeroed();
-                    let res_sys = SHGetFileInfoW(
-                        w_full.as_ptr(),
-                        0,
-                        &mut shfi_sys,
-                        std::mem::size_of::<SHFILEINFOW>() as u32,
-                        SHGFI_ICON | SHGFI_LARGEICON,
-                    );
-                    if res_sys != 0 && !shfi_sys.hIcon.is_null() {
-                        hicon = shfi_sys.hIcon;
-                    }
                 }
             }
 

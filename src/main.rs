@@ -187,7 +187,12 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
                     let mut icon_type = itm.icon_type.clone();
 
                     if icon_type == "extracted" {
-                        let icon_path = win32_utils::win32::extract_and_cache_icon(&itm.target, &cache);
+                        let path_to_extract = if !itm.icon_value.is_empty() {
+                            &itm.icon_value
+                        } else {
+                            &itm.target
+                        };
+                        let icon_path = win32_utils::win32::extract_and_cache_icon(path_to_extract, &cache);
                         if let Some(p) = icon_path {
                             if let Ok(img) = slint::Image::load_from_path(&p) {
                                 icon_img = img;
@@ -481,7 +486,8 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
             let col = itm.column.min(num_cols - 1);
             let mut itm_img = slint::Image::default();
             if itm.icon_type == "extracted" {
-                if let Some(p) = win32_utils::win32::extract_and_cache_icon(&itm.target, &cache) {
+                let p_extract = if !itm.icon_value.is_empty() { &itm.icon_value } else { &itm.target };
+                if let Some(p) = win32_utils::win32::extract_and_cache_icon(p_extract, &cache) {
                     if let Ok(img) = slint::Image::load_from_path(&p) {
                         itm_img = img;
                     }
@@ -527,7 +533,8 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
                 }
                 let mut itm_edit_img = slint::Image::default();
                 if itm.icon_type == "extracted" {
-                    if let Some(p) = win32_utils::win32::extract_and_cache_icon(&itm.target, &cache) {
+                    let p_extract = if !itm.icon_value.is_empty() { &itm.icon_value } else { &itm.target };
+                    if let Some(p) = win32_utils::win32::extract_and_cache_icon(p_extract, &cache) {
                         if let Ok(img) = slint::Image::load_from_path(&p) {
                             itm_edit_img = img;
                         }
@@ -1834,6 +1841,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // 5ter. Ouvrir le site web Emojipedia pour choisir et copier des émojis
+    {
+        settings_window.on_open_emoji_website(move || {
+            let _ = open::that("https://emojipedia.org/");
+        });
+    }
+
     // 6. Gestion des Items : Ouvrir ajout / modification
     {
         let settings_weak = settings_window.as_weak();
@@ -1890,6 +1904,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         sui.set_item_edit_mod_shift(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("shift")));
                         sui.set_item_edit_mod_win(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("win") || m.eq_ignore_ascii_case("windows")));
                         sui.set_item_edit_hotkey_key(itm.hotkey_key.clone().into());
+                        let mut itm_edit_img = slint::Image::default();
+                        if itm.icon_type == "extracted" {
+                            let cache = cache_dir();
+                            let p_extract = if !itm.icon_value.is_empty() { &itm.icon_value } else { &itm.target };
+                            if let Some(p) = win32_utils::win32::extract_and_cache_icon(p_extract, &cache) {
+                                if let Ok(img) = slint::Image::load_from_path(&p) {
+                                    itm_edit_img = img;
+                                }
+                            }
+                        }
+                        sui.set_item_edit_icon_image(itm_edit_img);
                         sui.set_show_item_editor(false);
                     }
                 }
@@ -1916,6 +1941,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
                             sui.set_item_edit_icon_type("extracted".into());
                             sui.set_item_edit_icon_image(img);
+                            sui.set_item_edit_icon_value(path_str.clone().into());
                         }
                     }
                 }
@@ -1938,6 +1964,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
                             sui.set_item_edit_icon_type("extracted".into());
                             sui.set_item_edit_icon_image(img);
+                            sui.set_item_edit_icon_value(path_str.clone().into());
                         }
                     }
                 }
@@ -1968,11 +1995,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let item_idx = sui.get_selected_item_index();
                 let name = sui.get_item_edit_name().to_string();
                 let target = sui.get_item_edit_target().to_string();
-                let icon_type = sui.get_item_edit_icon_type().to_string();
-                let icon_value = sui.get_item_edit_icon_value().to_string();
+                let mut icon_type = sui.get_item_edit_icon_type().to_string();
+                let mut icon_value = sui.get_item_edit_icon_value().to_string();
                 let bg_color = sui.get_item_edit_bg().to_string();
                 let text_color = sui.get_item_edit_text().to_string();
                 let target_cont_raw = sui.get_item_target_container_idx();
+
+                // Si l'icône est par défaut ou extraite et qu'une cible est renseignée, s'assurer de l'extraction
+                if (icon_type == "extracted" || icon_value.is_empty() || icon_value == "🚀") && !target.trim().is_empty() {
+                    let cache = cache_dir();
+                    let check_path = if icon_type == "extracted" && !icon_value.is_empty() {
+                        &icon_value
+                    } else {
+                        &target
+                    };
+                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(check_path, &cache) {
+                        if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
+                            icon_type = "extracted".to_string();
+                            sui.set_item_edit_icon_type("extracted".into());
+                            sui.set_item_edit_icon_image(img);
+                            if icon_value.is_empty() || icon_value == "🚀" {
+                                icon_value = target.clone();
+                                sui.set_item_edit_icon_value(icon_value.clone().into());
+                            }
+                        }
+                    }
+                }
 
                 let mut mods = Vec::new();
                 if sui.get_item_edit_mod_ctrl() { mods.push("Control".to_string()); }
