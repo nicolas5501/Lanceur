@@ -1685,7 +1685,7 @@ export component SettingsWindow inherits Window {
                                     ComboBox {
                                         model: root.available_item_columns;
                                         current-index <=> root.item_edit_column;
-                                        width: 80px;
+                                        width: 120px;
                                         selected => { root.save_item_editor(); }
                                     }
                                     HelpTooltip {
@@ -1744,7 +1744,7 @@ export component SettingsWindow inherits Window {
                                         model: ["", "Space", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Insert", "Delete", "Home", "End", "PageUp", "PageDown", "Tab", "Enter", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
                                         current-value <=> root.item_edit_hotkey_key;
                                         selected => { root.save_item_editor(); }
-                                        width: 80px;
+                                        width: 90px;
                                     }
                                     CheckBox { text: "Ctrl"; checked <=> root.item_edit_mod_ctrl; toggled => { root.save_item_editor(); } }
                                     CheckBox { text: "Alt"; checked <=> root.item_edit_mod_alt; toggled => { root.save_item_editor(); } }
