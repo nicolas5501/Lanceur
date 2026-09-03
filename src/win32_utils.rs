@@ -610,7 +610,7 @@ pub mod win32 {
             return;
         }
         let (work_x, work_y, work_w, work_h) = get_work_area();
-        let current_h = if is_expanded { (bar_h + 240).min(work_h) } else { bar_h.min(work_h) };
+        let current_h = if is_expanded { (bar_h + 500).min(work_h) } else { bar_h.min(work_h) };
 
         let (x, y, w, h) = match position {
             "Bottom" => {

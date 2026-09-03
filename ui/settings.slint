@@ -17,6 +17,7 @@ export struct ContainerItemSummary {
     items_count: int,
     hotkey_display: string,
     cont_row: int,
+    columns_count: int,
 }
 
 export struct ItemDetailData {
@@ -29,6 +30,7 @@ export struct ItemDetailData {
     bg_color: string,
     text_color: string,
     hotkey_display: string,
+    col_idx: int,
 }
 
 export component SettingsWindow inherits Window {
@@ -59,6 +61,8 @@ export component SettingsWindow inherits Window {
     in-out property <color> edit_container_bg_col: #1e293b;
     in-out property <color> edit_container_text_col: #f8fafc;
     in-out property <int> edit_container_row: 0;
+    in-out property <int> edit_container_columns: 0;
+    in property <[string]> available_container_columns: ["1 colonne", "2 colonnes", "3 colonnes", "4 colonnes", "5 colonnes", "6 colonnes", "7 colonnes", "8 colonnes", "9 colonnes", "10 colonnes"];
     in-out property <bool> edit_cont_mod_ctrl: false;
     in-out property <bool> edit_cont_mod_alt: false;
     in-out property <bool> edit_cont_mod_shift: false;
@@ -79,6 +83,8 @@ export component SettingsWindow inherits Window {
     in-out property <color> item_edit_bg_col: #1e293b;
     in-out property <color> item_edit_text_col: #f8fafc;
     in-out property <int> item_target_container_idx: 0;
+    in-out property <int> item_edit_column: 0;
+    in property <[string]> available_item_columns: [];
     in-out property <bool> item_edit_mod_ctrl: false;
     in-out property <bool> item_edit_mod_alt: false;
     in-out property <bool> item_edit_mod_shift: false;
@@ -91,6 +97,7 @@ export component SettingsWindow inherits Window {
     in-out property <string> pref_containers_align: "Center";
     in-out property <float> pref_bar_h: 46;
     in-out property <float> pref_item_h: 36;
+    in-out property <float> pref_icon_sz: 18;
     in-out property <float> pref_cont_font: 13;
     in-out property <float> pref_item_font: 11;
     in-out property <string> pref_bar_bg_color: "#0f172af8";
@@ -130,6 +137,7 @@ export component SettingsWindow inherits Window {
     callback delete_item(int);
     callback move_item_up(int);
     callback move_item_down(int);
+    callback move_item_column(int, int);
     callback duplicate_item(int, int);
     callback move_item_to_container(int, int);
     callback browse_item_target();
@@ -459,7 +467,7 @@ export component SettingsWindow inherits Window {
 
                                     Text {
                                         text: cont.icon;
-                                        font-size: 15px;
+                                        font-size: max(15px, root.pref_icon_sz * 1px);
                                         vertical-alignment: center;
                                     }
 
@@ -503,6 +511,25 @@ export component SettingsWindow inherits Window {
                                                         font-size: 9px;
                                                         font-weight: 700;
                                                         color: #38bdf8;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+
+                                            if cont.columns_count > 1 : Rectangle {
+                                                background: #05966933;
+                                                border-radius: 3px;
+                                                border-width: 1px;
+                                                border-color: #34d39988;
+                                                height: 15px;
+                                                HorizontalLayout {
+                                                    padding-left: 3px;
+                                                    padding-right: 3px;
+                                                    Text {
+                                                        text: cont.columns_count + " col";
+                                                        font-size: 9px;
+                                                        font-weight: 700;
+                                                        color: #34d399;
                                                         vertical-alignment: center;
                                                     }
                                                 }
@@ -599,6 +626,20 @@ export component SettingsWindow inherits Window {
                                 ComboBox {
                                     model: root.available_rows;
                                     current-index <=> root.edit_container_row;
+                                    horizontal-stretch: 1;
+                                    selected => {
+                                        root.save_container_info();
+                                    }
+                                }
+                            }
+
+                            // Colonnes du conteneur
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text { text: "Colonnes :"; font-size: 11px; color: #94a3b8; vertical-alignment: center; width: 75px; }
+                                ComboBox {
+                                    model: root.available_container_columns;
+                                    current-index <=> root.edit_container_columns;
                                     horizontal-stretch: 1;
                                     selected => {
                                         root.save_container_info();
@@ -752,7 +793,7 @@ export component SettingsWindow inherits Window {
                             }
 
                             for itm[idx] in root.items_list : Rectangle {
-                                height: 50px;
+                                height: max(50px, (root.pref_icon_sz * 1px) + 20px);
                                 border-radius: 6px;
                                 background: idx == root.selected_item_index ? #3b82f633 : (item_row_touch.has_hover ? #1e293b88 : #0f172a);
                                 border-width: 1px;
@@ -775,7 +816,7 @@ export component SettingsWindow inherits Window {
 
                                     Text {
                                         text: itm.icon_value;
-                                        font-size: 16px;
+                                        font-size: max(16px, root.pref_icon_sz * 1px);
                                         vertical-alignment: center;
                                     }
 
@@ -795,6 +836,23 @@ export component SettingsWindow inherits Window {
                                                 color: #f8fafc;
                                                 overflow: elide;
                                                 vertical-alignment: center;
+                                            }
+
+                                            if root.edit_container_columns > 0 : Rectangle {
+                                                background: itm.col_idx == 0 ? #1d4ed8 : (itm.col_idx == 1 ? #047857 : (itm.col_idx == 2 ? #7c3aed : (itm.col_idx == 3 ? #b45309 : (itm.col_idx == 4 ? #be185d : (itm.col_idx == 5 ? #0891b2 : #475569)))));
+                                                border-radius: 3px;
+                                                height: 15px;
+                                                HorizontalLayout {
+                                                    padding-left: 4px;
+                                                    padding-right: 4px;
+                                                    Text {
+                                                        text: "Col " + (itm.col_idx + 1);
+                                                        font-size: 9px;
+                                                        color: #ffffff;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
                                             }
 
                                             if itm.hotkey_display != "" : Rectangle {
@@ -819,6 +877,27 @@ export component SettingsWindow inherits Window {
                                             HorizontalLayout {
                                                 spacing: 3px;
                                                 alignment: center;
+
+                                                if root.edit_container_columns > 0 : Rectangle {
+                                                    width: 22px; height: 22px; border-radius: 4px;
+                                                    background: itm_btn_left.has_hover ? #475569 : #1e293b;
+                                                    border-width: 1px; border-color: #334155;
+                                                    Text { text: "◀"; font-size: 9px; color: itm.col_idx > 0 ? #cbd5e1 : #475569; horizontal-alignment: center; vertical-alignment: center; }
+                                                    itm_btn_left := TouchArea {
+                                                        mouse-cursor: itm.col_idx > 0 ? pointer : default;
+                                                        clicked => { if itm.col_idx > 0 { root.move_item_column(idx, -1); } }
+                                                    }
+                                                }
+                                                if root.edit_container_columns > 0 : Rectangle {
+                                                    width: 22px; height: 22px; border-radius: 4px;
+                                                    background: itm_btn_right.has_hover ? #475569 : #1e293b;
+                                                    border-width: 1px; border-color: #334155;
+                                                    Text { text: "▶"; font-size: 9px; color: itm.col_idx < root.edit_container_columns ? #cbd5e1 : #475569; horizontal-alignment: center; vertical-alignment: center; }
+                                                    itm_btn_right := TouchArea {
+                                                        mouse-cursor: itm.col_idx < root.edit_container_columns ? pointer : default;
+                                                        clicked => { if itm.col_idx < root.edit_container_columns { root.move_item_column(idx, 1); } }
+                                                    }
+                                                }
 
                                                 Rectangle {
                                                     width: 24px; height: 22px; border-radius: 4px;
@@ -922,14 +1001,21 @@ export component SettingsWindow inherits Window {
                                 }
                             }
 
-                            // Conteneur de destination
+                            // Conteneur et Colonne de destination
                             HorizontalLayout {
                                 spacing: 6px;
-                                Text { text: "Conteneur :"; font-size: 11px; color: #94a3b8; vertical-alignment: center; width: 70px; }
+                                Text { text: "Conteneur :"; font-size: 11px; color: #94a3b8; vertical-alignment: center; width: 65px; }
                                 ComboBox {
                                     model: root.container_names;
                                     current-index <=> root.item_target_container_idx;
                                     horizontal-stretch: 1;
+                                    selected => { root.save_item_editor(); }
+                                }
+                                Text { text: "Colonne :"; font-size: 11px; color: #94a3b8; vertical-alignment: center; width: 50px; }
+                                ComboBox {
+                                    model: root.available_item_columns;
+                                    current-index <=> root.item_edit_column;
+                                    width: 105px;
                                     selected => { root.save_item_editor(); }
                                 }
                             }
@@ -1197,7 +1283,7 @@ export component SettingsWindow inherits Window {
                                 alignment: center;
 
                                 preview_item := Rectangle {
-                                height: 32px;
+                                height: max(32px, (root.pref_icon_sz * 1px) + 12px);
                                 width: 100%;
                                 clip: true;
 
@@ -1265,7 +1351,7 @@ export component SettingsWindow inherits Window {
                                     animate x { duration: 100ms; easing: ease-out; }
                                     animate padding-left { duration: 120ms; easing: ease-out; }
 
-                                    Text { text: "🚀"; font-size: 14px; vertical-alignment: center; }
+                                    Text { text: "🚀"; font-size: max(14px, root.pref_icon_sz * 1px); vertical-alignment: center; }
                                     Text {
                                         text: "Survolez-moi pour tester l'animation !";
                                         font-size: 12px;
@@ -1352,6 +1438,18 @@ export component SettingsWindow inherits Window {
                             minimum: 20;
                             maximum: 60;
                             value <=> root.pref_item_h;
+                            horizontal-stretch: 1;
+                        }
+                    }
+
+                    // Taille globale des icônes
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Taille des icônes (" + round(root.pref_icon_sz) + " px) :"; font-size: 13px; color: #cbd5e1; vertical-alignment: center; width: 250px; }
+                        Slider {
+                            minimum: 12;
+                            maximum: 48;
+                            value <=> root.pref_icon_sz;
                             horizontal-stretch: 1;
                         }
                     }
@@ -1551,6 +1649,13 @@ export component SettingsWindow inherits Window {
                         current-value <=> root.item_edit_hotkey_key;
                         horizontal-stretch: 1;
                     }
+                }
+
+                Text { text: "Colonne dans le conteneur :"; font-size: 12px; font-weight: 600; color: #94a3b8; }
+                ComboBox {
+                    model: root.available_item_columns;
+                    current-index <=> root.item_edit_column;
+                    horizontal-stretch: 1;
                 }
 
                 if root.selected_item_index >= 0 : Text { text: "Déplacer / Dupliquer vers un autre conteneur :"; font-size: 12px; font-weight: 600; color: #94a3b8; }

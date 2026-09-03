@@ -68,7 +68,8 @@ fn format_hotkey_display(mods: &[String], key: &str) -> String {
 fn get_total_bar_height(cfg: &AppConfig) -> i32 {
     let max_row = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0);
     let rows_count = (max_row + 1).max(cfg.settings.rows_count).max(1);
-    (cfg.settings.bar_height as i32) * (rows_count as i32)
+    let eff_bar_h = cfg.settings.bar_height.max(cfg.settings.icon_size + 8.0);
+    (eff_bar_h as i32) * (rows_count as i32)
 }
 
 fn get_max_allowed_rows(cfg: &AppConfig) -> usize {
@@ -77,7 +78,8 @@ fn get_max_allowed_rows(cfg: &AppConfig) -> usize {
     #[cfg(not(windows))]
     let work_h = 1080;
 
-    let bar_h = (cfg.settings.bar_height as i32).max(16);
+    let eff_bar_h = cfg.settings.bar_height.max(cfg.settings.icon_size + 8.0);
+    let bar_h = (eff_bar_h as i32).max(16);
     let max_by_screen = ((work_h / bar_h) as usize).max(1);
     let max_in_cfg = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0) + 1;
     let max_explicit = cfg.settings.rows_count;
@@ -152,6 +154,7 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
     bar.set_containers_align(cfg.settings.containers_alignment.clone().into());
     bar.set_bar_h(cfg.settings.bar_height);
     bar.set_item_h(cfg.settings.item_height);
+    bar.set_icon_sz(cfg.settings.icon_size);
     bar.set_container_font_sz(cfg.settings.container_font_size);
     bar.set_item_font_sz(cfg.settings.item_font_size);
 
@@ -175,7 +178,10 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
 
         for (flat_idx, cont) in cfg.containers.iter().enumerate() {
             if cont.row == r {
+                let num_cols = cont.columns_count.clamp(1, 10);
+                let mut col_buckets: Vec<Vec<BarItemData>> = vec![Vec::new(); num_cols];
                 let mut items_data: Vec<BarItemData> = Vec::new();
+
                 for itm in &cont.items {
                     let mut icon_img = slint::Image::default();
                     let mut icon_type = itm.icon_type.clone();
@@ -203,7 +209,7 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
                     let itm_bg = parse_hex_color(&itm.bg_color, Color::from_argb_u8(0, 0, 0, 0));
                     let itm_text = parse_hex_color(&itm.text_color, Color::from_argb_u8(0, 0, 0, 0));
 
-                    items_data.push(BarItemData {
+                    let b_item = BarItemData {
                         id: itm.id.clone().into(),
                         name: itm.name.clone().into(),
                         target: itm.target.clone().into(),
@@ -214,6 +220,19 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
                         hotkey_display: item_hk_str.into(),
                         bg_color: itm_bg,
                         text_color: itm_text,
+                    };
+
+                    let c = itm.column.min(num_cols - 1);
+                    col_buckets[c].push(b_item.clone());
+                    items_data.push(b_item);
+                }
+
+                let max_items_in_col = col_buckets.iter().map(|b| b.len()).max().unwrap_or(0).max(1);
+                let mut bar_columns: Vec<BarColumnData> = Vec::new();
+                for (c_i, bucket) in col_buckets.into_iter().enumerate() {
+                    bar_columns.push(BarColumnData {
+                        col_idx: c_i as i32,
+                        items: ModelRc::new(VecModel::from(bucket)),
                     });
                 }
 
@@ -230,6 +249,9 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
                     display_mode: cont.display_mode.clone().into(),
                     bg_color: cont_bg,
                     text_color: cont_text,
+                    columns_count: num_cols as i32,
+                    max_items_in_col: max_items_in_col as i32,
+                    columns: ModelRc::new(VecModel::from(bar_columns)),
                     items: ModelRc::new(VecModel::from(items_data)),
                     hotkey_display: cont_hk_str.into(),
                 });
@@ -359,6 +381,7 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
             items_count: cont.items.len() as i32,
             hotkey_display: hk.into(),
             cont_row: cont.row as i32,
+            columns_count: cont.columns_count.clamp(1, 10) as i32,
         });
     }
 
@@ -384,6 +407,15 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
         settings_win.set_edit_container_bg_col(c_bg_col);
         settings_win.set_edit_container_text_col(c_txt_col);
         settings_win.set_edit_container_row(cont.row as i32);
+
+        let num_cols = cont.columns_count.clamp(1, 10);
+        settings_win.set_edit_container_columns((num_cols - 1) as i32);
+
+        let available_cols: Vec<SharedString> = (1..=num_cols)
+            .map(|c| format!("Colonne {}", c).into())
+            .collect();
+        settings_win.set_available_item_columns(ModelRc::new(VecModel::from(available_cols)));
+
         settings_win.set_edit_cont_mod_ctrl(cont.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("control") || m.eq_ignore_ascii_case("ctrl")));
         settings_win.set_edit_cont_mod_alt(cont.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("alt")));
         settings_win.set_edit_cont_mod_shift(cont.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("shift")));
@@ -393,6 +425,7 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
         let mut items_detail: Vec<ItemDetailData> = Vec::new();
         for itm in &cont.items {
             let hk = format_hotkey_display(&itm.hotkey_modifiers, &itm.hotkey_key);
+            let col = itm.column.min(num_cols - 1);
             items_detail.push(ItemDetailData {
                 id: itm.id.clone().into(),
                 name: itm.name.clone().into(),
@@ -403,6 +436,7 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
                 bg_color: itm.bg_color.clone().into(),
                 text_color: itm.text_color.clone().into(),
                 hotkey_display: hk.into(),
+                col_idx: col as i32,
             });
         }
         settings_win.set_items_list(ModelRc::new(VecModel::from(items_detail)));
@@ -430,6 +464,7 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
                 settings_win.set_item_edit_bg_col(i_bg_col);
                 settings_win.set_item_edit_text_col(i_txt_col);
                 settings_win.set_item_target_container_idx(safe_idx as i32);
+                settings_win.set_item_edit_column(itm.column.min(num_cols - 1) as i32);
                 settings_win.set_item_edit_mod_ctrl(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("control") || m.eq_ignore_ascii_case("ctrl")));
                 settings_win.set_item_edit_mod_alt(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("alt")));
                 settings_win.set_item_edit_mod_shift(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("shift")));
@@ -446,6 +481,7 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
             settings_win.set_item_edit_bg_col(Color::from_argb_u8(255, 30, 41, 59));
             settings_win.set_item_edit_text_col(Color::from_argb_u8(255, 248, 250, 252));
             settings_win.set_item_target_container_idx(safe_idx as i32);
+            settings_win.set_item_edit_column(0);
             settings_win.set_item_edit_mod_ctrl(false);
             settings_win.set_item_edit_mod_alt(false);
             settings_win.set_item_edit_mod_shift(false);
@@ -461,6 +497,7 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
     settings_win.set_pref_containers_align(cfg.settings.containers_alignment.clone().into());
     settings_win.set_pref_bar_h(cfg.settings.bar_height);
     settings_win.set_pref_item_h(cfg.settings.item_height);
+    settings_win.set_pref_icon_sz(cfg.settings.icon_size);
     settings_win.set_pref_cont_font(cfg.settings.container_font_size);
     settings_win.set_pref_item_font(cfg.settings.item_font_size);
     settings_win.set_pref_bar_bg_color(cfg.settings.bar_bg_color.clone().into());
@@ -507,6 +544,7 @@ fn add_dropped_file_to_container(file_path: &str, target_cont_idx: usize, config
         text_color: "".to_string(),
         hotkey_modifiers: Vec::new(),
         hotkey_key: String::new(),
+        column: 0,
     };
 
     let mut cfg = config_arc.lock().unwrap();
@@ -523,6 +561,7 @@ fn add_dropped_file_to_container(file_path: &str, target_cont_idx: usize, config
             hotkey_modifiers: Vec::new(),
             hotkey_key: String::new(),
             row: 0,
+            columns_count: 1,
             items: vec![new_item],
         });
     } else {
@@ -537,8 +576,8 @@ fn find_container_at_coordinates(cfg: &AppConfig, x: i32, y: i32, bar_total_widt
         return 0;
     }
 
-    let bar_h = cfg.settings.bar_height.max(20.0);
-    let target_row = (y.max(0) as f32 / bar_h) as usize;
+    let eff_bar_h = cfg.settings.bar_height.max(cfg.settings.icon_size + 8.0).max(20.0);
+    let target_row = (y.max(0) as f32 / eff_bar_h) as usize;
 
     // 1. Récupérer les conteneurs de la ligne correspondante
     let mut row_containers: Vec<(usize, &ContainerConfig)> = cfg.containers
@@ -574,7 +613,7 @@ fn find_container_at_coordinates(cfg: &AppConfig, x: i32, y: i32, bar_total_widt
             }
             let mut icon_w = 0.0;
             if cont.display_mode != "NameOnly" {
-                icon_w += font_sz + 8.0;
+                icon_w += cfg.settings.icon_size.max(9.0) + 8.0;
             }
             (24.0 + icon_w + text_w + 14.0).max(45.0)
         };
@@ -1524,6 +1563,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     hotkey_modifiers: Vec::new(),
                     hotkey_key: String::new(),
                     row: target_row,
+                    columns_count: 1,
                     items: Vec::new(),
                 };
                 cfg.containers.push(new_cont);
@@ -1633,6 +1673,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cont.bg_color = sui.get_edit_container_bg().to_string();
                     cont.text_color = sui.get_edit_container_text().to_string();
                     cont.row = sui.get_edit_container_row() as usize;
+                    let new_cols = (sui.get_edit_container_columns() as usize + 1).clamp(1, 10);
+                    cont.columns_count = new_cols;
+                    for itm in &mut cont.items {
+                        if itm.column >= new_cols {
+                            itm.column = new_cols - 1;
+                        }
+                    }
 
                     let mut mods = Vec::new();
                     if sui.get_edit_cont_mod_ctrl() { mods.push("Control".to_string()); }
@@ -1681,6 +1728,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sui.set_item_edit_text("".into());
                 sui.set_item_edit_bg_col(Color::from_argb_u8(255, 30, 41, 59));
                 sui.set_item_edit_text_col(Color::from_argb_u8(255, 248, 250, 252));
+                sui.set_item_edit_column(0);
                 sui.set_item_edit_mod_ctrl(false);
                 sui.set_item_edit_mod_alt(false);
                 sui.set_item_edit_mod_shift(false);
@@ -1712,6 +1760,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         sui.set_item_edit_bg_col(i_bg);
                         sui.set_item_edit_text_col(i_txt);
                         sui.set_item_target_container_idx(c_idx as i32);
+                        sui.set_item_edit_column(itm.column.min(cont.columns_count.saturating_sub(1)) as i32);
                         sui.set_item_edit_mod_ctrl(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("control") || m.eq_ignore_ascii_case("ctrl")));
                         sui.set_item_edit_mod_alt(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("alt")));
                         sui.set_item_edit_mod_shift(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("shift")));
@@ -1759,6 +1808,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let icon_value = sui.get_item_edit_icon_value().to_string();
                 let bg_color = sui.get_item_edit_bg().to_string();
                 let text_color = sui.get_item_edit_text().to_string();
+                let target_cont_raw = sui.get_item_target_container_idx();
 
                 let mut mods = Vec::new();
                 if sui.get_item_edit_mod_ctrl() { mods.push("Control".to_string()); }
@@ -1769,8 +1819,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 if !name.trim().is_empty() {
                     let mut cfg = cfg_arc.lock().unwrap();
-                    if let Some(cont) = cfg.containers.get_mut(c_idx) {
-                        if item_idx >= 0 && (item_idx as usize) < cont.items.len() {
+                    let target_cont_idx = if target_cont_raw >= 0 && (target_cont_raw as usize) < cfg.containers.len() {
+                        target_cont_raw as usize
+                    } else {
+                        c_idx
+                    };
+
+                    let max_cols = cfg.containers.get(target_cont_idx).map(|c| c.columns_count.clamp(1, 10)).unwrap_or(1);
+                    let col = (sui.get_item_edit_column() as usize).min(max_cols - 1);
+
+                    if target_cont_idx != c_idx && c_idx < cfg.containers.len() && item_idx >= 0 && (item_idx as usize) < cfg.containers[c_idx].items.len() {
+                        let mut itm = cfg.containers[c_idx].items.remove(item_idx as usize);
+                        itm.name = name;
+                        itm.target = target;
+                        itm.icon_type = icon_type;
+                        itm.icon_value = icon_value;
+                        itm.bg_color = bg_color;
+                        itm.text_color = text_color;
+                        itm.hotkey_modifiers = mods;
+                        itm.hotkey_key = hotkey_key;
+                        itm.column = col;
+                        cfg.containers[target_cont_idx].items.push(itm);
+                    } else if let Some(cont) = cfg.containers.get_mut(target_cont_idx) {
+                        if item_idx >= 0 && (item_idx as usize) < cont.items.len() && target_cont_idx == c_idx {
                             let itm = &mut cont.items[item_idx as usize];
                             itm.name = name;
                             itm.target = target;
@@ -1780,6 +1851,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             itm.text_color = text_color;
                             itm.hotkey_modifiers = mods;
                             itm.hotkey_key = hotkey_key;
+                            itm.column = col;
                         } else {
                             cont.items.push(LauncherItem {
                                 id: generate_id(),
@@ -1792,22 +1864,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 text_color,
                                 hotkey_modifiers: mods,
                                 hotkey_key,
+                                column: col,
                             });
                         }
-                        save_config(&cfg);
+                    }
+                    save_config(&cfg);
 
-                        #[cfg(windows)]
-                        {
-                            use windows_sys::Win32::Foundation::HWND;
-                            let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
-                            register_all_hotkeys_for_app(tray_hwnd, &cfg);
-                        }
+                    #[cfg(windows)]
+                    {
+                        use windows_sys::Win32::Foundation::HWND;
+                        let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
+                        register_all_hotkeys_for_app(tray_hwnd, &cfg);
+                    }
 
-                        sui.set_show_item_editor(false);
-                        refresh_settings_ui(&sui, &cfg, c_idx);
-                        if let Some(bui) = bar_weak.upgrade() {
-                            refresh_bar_ui(&bui, &cfg);
-                        }
+                    sui.set_show_item_editor(false);
+                    refresh_settings_ui(&sui, &cfg, c_idx);
+                    if let Some(bui) = bar_weak.upgrade() {
+                        refresh_bar_ui(&bui, &cfg);
                     }
                 }
             }
@@ -2282,17 +2355,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let s_idx = sel_idx.clone();
         settings_window.on_move_item_up(move |item_idx| {
             let i = item_idx as usize;
-            if i > 0 {
-                let c_idx = s_idx.load(Ordering::SeqCst);
-                let mut cfg = c_arc.lock().unwrap();
-                if let Some(cont) = cfg.containers.get_mut(c_idx) {
-                    cont.items.swap(i, i - 1);
-                    save_config(&cfg);
-                    if let Some(sui) = s_weak.upgrade() {
-                        refresh_settings_ui(&sui, &cfg, c_idx);
-                    }
-                    if let Some(bui) = b_weak.upgrade() {
-                        refresh_bar_ui(&bui, &cfg);
+            let c_idx = s_idx.load(Ordering::SeqCst);
+            let mut cfg = c_arc.lock().unwrap();
+            if let Some(cont) = cfg.containers.get_mut(c_idx) {
+                if i < cont.items.len() {
+                    let cur_col = cont.items[i].column;
+                    if let Some(prev_idx) = (0..i).rev().find(|&k| cont.items[k].column == cur_col) {
+                        cont.items.swap(i, prev_idx);
+                        save_config(&cfg);
+                        if let Some(sui) = s_weak.upgrade() {
+                            sui.set_selected_item_index(prev_idx as i32);
+                            refresh_settings_ui(&sui, &cfg, c_idx);
+                        }
+                        if let Some(bui) = b_weak.upgrade() {
+                            refresh_bar_ui(&bui, &cfg);
+                        }
                     }
                 }
             }
@@ -2307,14 +2384,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let c_idx = s_idx2.load(Ordering::SeqCst);
             let mut cfg = c_arc2.lock().unwrap();
             if let Some(cont) = cfg.containers.get_mut(c_idx) {
-                if i + 1 < cont.items.len() {
-                    cont.items.swap(i, i + 1);
-                    save_config(&cfg);
-                    if let Some(sui) = s_weak2.upgrade() {
-                        refresh_settings_ui(&sui, &cfg, c_idx);
+                if i < cont.items.len() {
+                    let cur_col = cont.items[i].column;
+                    if let Some(next_idx) = ((i + 1)..cont.items.len()).find(|&k| cont.items[k].column == cur_col) {
+                        cont.items.swap(i, next_idx);
+                        save_config(&cfg);
+                        if let Some(sui) = s_weak2.upgrade() {
+                            sui.set_selected_item_index(next_idx as i32);
+                            refresh_settings_ui(&sui, &cfg, c_idx);
+                        }
+                        if let Some(bui) = b_weak2.upgrade() {
+                            refresh_bar_ui(&bui, &cfg);
+                        }
                     }
-                    if let Some(bui) = b_weak2.upgrade() {
-                        refresh_bar_ui(&bui, &cfg);
+                }
+            }
+        });
+
+        let s_weak3 = settings_weak.clone();
+        let b_weak3 = bar_weak.clone();
+        let c_arc3 = cfg_arc.clone();
+        let s_idx3 = sel_idx.clone();
+        settings_window.on_move_item_column(move |item_idx, delta| {
+            let i = item_idx as usize;
+            let c_idx = s_idx3.load(Ordering::SeqCst);
+            let mut cfg = c_arc3.lock().unwrap();
+            if let Some(cont) = cfg.containers.get_mut(c_idx) {
+                if i < cont.items.len() {
+                    let max_col = cont.columns_count.clamp(1, 10) - 1;
+                    let cur_col = cont.items[i].column.min(max_col);
+                    let new_col = if delta < 0 {
+                        cur_col.saturating_sub(1)
+                    } else {
+                        (cur_col + 1).min(max_col)
+                    };
+                    if new_col != cur_col {
+                        cont.items[i].column = new_col;
+                        save_config(&cfg);
+                        if let Some(sui) = s_weak3.upgrade() {
+                            sui.set_item_edit_column(new_col as i32);
+                            refresh_settings_ui(&sui, &cfg, c_idx);
+                        }
+                        if let Some(bui) = b_weak3.upgrade() {
+                            refresh_bar_ui(&bui, &cfg);
+                        }
                     }
                 }
             }
@@ -2337,7 +2450,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut cfg = cfg_arc.lock().unwrap();
                 if src_c != dst_c && src_c < cfg.containers.len() && dst_c < cfg.containers.len() {
                     if i_idx < cfg.containers[src_c].items.len() {
-                        let itm = cfg.containers[src_c].items.remove(i_idx);
+                        let mut itm = cfg.containers[src_c].items.remove(i_idx);
+                        let dst_max_cols = cfg.containers[dst_c].columns_count.clamp(1, 10);
+                        itm.column = itm.column.min(dst_max_cols - 1);
                         cfg.containers[dst_c].items.push(itm);
                         save_config(&cfg);
                         sui.set_show_item_editor(false);
@@ -2370,6 +2485,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut duplicated = orig;
                         duplicated.id = generate_id();
                         duplicated.name = format!("{} (Copie)", duplicated.name);
+                        let dst_max_cols = cfg.containers[dst_c].columns_count.clamp(1, 10);
+                        duplicated.column = duplicated.column.min(dst_max_cols - 1);
                         cfg.containers[dst_c].items.push(duplicated);
                         save_config(&cfg);
                         sui.set_show_item_editor(false);
@@ -2397,6 +2514,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cfg.settings.containers_alignment = sui.get_pref_containers_align().to_string();
                 cfg.settings.bar_height = sui.get_pref_bar_h();
                 cfg.settings.item_height = sui.get_pref_item_h();
+                cfg.settings.icon_size = sui.get_pref_icon_sz();
                 cfg.settings.container_font_size = sui.get_pref_cont_font();
                 cfg.settings.item_font_size = sui.get_pref_item_font();
                 cfg.settings.bar_bg_color = sui.get_pref_bar_bg_color().to_string();

@@ -18,6 +18,8 @@ pub struct AppSettings {
     pub containers_alignment: String,  // "Left", "Center", "Right"
     pub bar_height: f32,               // Ex: 36.0
     pub item_height: f32,              // Ex: 26.0
+    #[serde(default = "default_icon_size")]
+    pub icon_size: f32,                // Ex: 18.0
     pub container_font_size: f32,      // Ex: 11.0
     pub item_font_size: f32,           // Ex: 11.0
     #[serde(default = "default_bar_bg")]
@@ -41,6 +43,7 @@ pub struct AppSettings {
 
 fn default_rows_count() -> usize { 1 }
 fn default_alignment() -> String { "Left".to_string() }
+fn default_icon_size() -> f32 { 18.0 }
 fn default_bar_bg() -> String { "#0f172af8".to_string() }
 fn default_bar_text() -> String { "#f8fafc".to_string() }
 fn default_dropdown_hover_color() -> String { "#2563eb".to_string() }
@@ -53,6 +56,7 @@ impl Default for AppSettings {
             containers_alignment: "Left".to_string(),
             bar_height: 36.0,
             item_height: 26.0,
+            icon_size: default_icon_size(),
             container_font_size: 11.0,
             item_font_size: 11.0,
             bar_bg_color: default_bar_bg(),
@@ -90,11 +94,17 @@ pub struct ContainerConfig {
     pub hotkey_key: String,
     #[serde(default)]
     pub row: usize, // 0 = Ligne 1, 1 = Ligne 2, etc.
+    #[serde(default = "default_columns_count")]
+    pub columns_count: usize, // 1 à 10 colonnes (1 par défaut)
     pub items: Vec<LauncherItem>,
 }
 
 fn default_display_mode() -> String {
     "Both".to_string()
+}
+
+fn default_columns_count() -> usize {
+    1
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -113,6 +123,8 @@ pub struct LauncherItem {
     pub hotkey_modifiers: Vec<String>,
     #[serde(default)]
     pub hotkey_key: String,
+    #[serde(default)]
+    pub column: usize,      // 0 = Colonne 1, 1 = Colonne 2, etc.
 }
 
 pub fn generate_id() -> String {
@@ -150,6 +162,7 @@ pub fn default_config() -> AppConfig {
                 hotkey_modifiers: Vec::new(),
                 hotkey_key: String::new(),
                 row: 0,
+                columns_count: 1,
                 items: vec![
                     LauncherItem {
                         id: generate_id(),
@@ -162,6 +175,7 @@ pub fn default_config() -> AppConfig {
                         text_color: "".to_string(),
                         hotkey_modifiers: Vec::new(),
                         hotkey_key: String::new(),
+                        column: 0,
                     },
                     LauncherItem {
                         id: generate_id(),
@@ -174,6 +188,7 @@ pub fn default_config() -> AppConfig {
                         text_color: "".to_string(),
                         hotkey_modifiers: Vec::new(),
                         hotkey_key: String::new(),
+                        column: 0,
                     },
                 ],
             },
@@ -189,6 +204,7 @@ pub fn default_config() -> AppConfig {
                 hotkey_modifiers: Vec::new(),
                 hotkey_key: String::new(),
                 row: 0,
+                columns_count: 1,
                 items: vec![
                     LauncherItem {
                         id: generate_id(),
@@ -201,6 +217,7 @@ pub fn default_config() -> AppConfig {
                         text_color: "".to_string(),
                         hotkey_modifiers: Vec::new(),
                         hotkey_key: String::new(),
+                        column: 0,
                     },
                     LauncherItem {
                         id: generate_id(),
@@ -213,6 +230,7 @@ pub fn default_config() -> AppConfig {
                         text_color: "".to_string(),
                         hotkey_modifiers: Vec::new(),
                         hotkey_key: String::new(),
+                        column: 0,
                     },
                 ],
             },
