@@ -340,8 +340,8 @@ export component BarWindow inherits Window {
                                     alignment: center;
 
                                     if cont.display_mode != "NameOnly" : Rectangle {
-                                        width: root.icon_sz + 2px;
-                                        height: root.icon_sz + 2px;
+                                        width: max(22px, root.icon_sz + 4px);
+                                        height: max(22px, root.icon_sz + 4px);
 
                                         if cont.icon_type == "extracted" : Image {
                                             source: cont.icon_image;
