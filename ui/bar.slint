@@ -347,6 +347,8 @@ export component BarWindow inherits Window {
                                             source: cont.icon_image;
                                             width: root.icon_sz;
                                             height: root.icon_sz;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
                                             image-fit: contain;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
@@ -355,6 +357,8 @@ export component BarWindow inherits Window {
                                         if cont.icon_type != "extracted" : Text {
                                             text: cont.icon;
                                             font-size: root.icon_sz;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                         }
