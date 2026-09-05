@@ -2125,14 +2125,14 @@ export component SettingsWindow inherits Window {
                         spacing: 12px;
                         Text { text: "Hauteur du bandeau (" + round(root.pref_bar_h) + " px) :"; font-size: 13px; color: #cbd5e1; vertical-alignment: center; width: 250px; }
                         Slider {
-                            minimum: 28;
-                            maximum: 70;
+                            minimum: max(28, root.pref_icon_sz + 10);
+                            maximum: 80;
                             value <=> root.pref_bar_h;
                             horizontal-stretch: 1;
                         }
                         HelpTooltip {
                             open_left: true;
-                            text: "Hauteur en pixels de la barre horizontale principale.";
+                            text: "Hauteur en pixels de la barre horizontale principale (ajustée automatiquement à la taille des icônes).";
                             example: "46 px";
                         }
                     }
@@ -2142,8 +2142,8 @@ export component SettingsWindow inherits Window {
                         spacing: 12px;
                         Text { text: "Hauteur des items (" + round(root.pref_item_h) + " px) :"; font-size: 13px; color: #cbd5e1; vertical-alignment: center; width: 250px; }
                         Slider {
-                            minimum: 20;
-                            maximum: 60;
+                            minimum: max(20, root.pref_icon_sz + 6);
+                            maximum: 70;
                             value <=> root.pref_item_h;
                             horizontal-stretch: 1;
                         }
@@ -2162,11 +2162,15 @@ export component SettingsWindow inherits Window {
                             minimum: 12;
                             maximum: 48;
                             value <=> root.pref_icon_sz;
+                            changed value => {
+                                root.pref_bar_h = max(root.pref_bar_h, root.pref_icon_sz + 14);
+                                root.pref_item_h = max(root.pref_item_h, root.pref_icon_sz + 8);
+                            }
                             horizontal-stretch: 1;
                         }
                         HelpTooltip {
                             open_left: true;
-                            text: "Dimension en pixels des icônes affichées dans la barre et les menus.";
+                            text: "Dimension en pixels des icônes affichées dans la barre et les menus (ajuste automatiquement la hauteur du bandeau).";
                             example: "18 px ou 24 px";
                         }
                     }

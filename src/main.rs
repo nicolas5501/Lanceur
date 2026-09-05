@@ -67,7 +67,7 @@ fn format_hotkey_display(mods: &[String], key: &str) -> String {
 fn get_total_bar_height(cfg: &AppConfig) -> i32 {
     let max_row = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0);
     let rows_count = (max_row + 1).max(cfg.settings.rows_count).max(1);
-    let eff_bar_h = cfg.settings.bar_height.max(cfg.settings.icon_size + 8.0);
+    let eff_bar_h = cfg.settings.bar_height.max(cfg.settings.icon_size + 14.0);
     (eff_bar_h as i32) * (rows_count as i32)
 }
 
@@ -77,7 +77,7 @@ fn get_max_allowed_rows(cfg: &AppConfig) -> usize {
     #[cfg(not(windows))]
     let work_h = 1080;
 
-    let eff_bar_h = cfg.settings.bar_height.max(cfg.settings.icon_size + 8.0);
+    let eff_bar_h = cfg.settings.bar_height.max(cfg.settings.icon_size + 14.0);
     let bar_h = (eff_bar_h as i32).max(16);
     let max_by_screen = ((work_h / bar_h) as usize).max(1);
     let max_in_cfg = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0) + 1;
@@ -766,7 +766,7 @@ fn find_container_at_coordinates(cfg: &AppConfig, x: i32, y: i32, bar_total_widt
         return 0;
     }
 
-    let eff_bar_h = cfg.settings.bar_height.max(cfg.settings.icon_size + 8.0).max(20.0);
+    let eff_bar_h = cfg.settings.bar_height.max(cfg.settings.icon_size + 14.0).max(20.0);
     let target_row = (y.max(0) as f32 / eff_bar_h) as usize;
 
     // 1. Récupérer les conteneurs de la ligne correspondante
@@ -794,18 +794,23 @@ fn find_container_at_coordinates(cfg: &AppConfig, x: i32, y: i32, bar_total_widt
     let mut total_row_w: f32 = 0.0;
 
     for (orig_idx, cont) in &row_containers {
+        let mut text_w = 0.0;
+        if cont.display_mode != "IconOnly" {
+            text_w += cont.name.chars().count() as f32 * (font_sz * 0.72);
+        }
+        let mut icon_w = 0.0;
+        if cont.display_mode != "NameOnly" {
+            icon_w += cfg.settings.icon_size.max(9.0) + 4.0;
+        }
+        let pad_w = (cfg.settings.icon_size * 0.25).max(10.0) * 2.0;
+        let spacing_w = (cfg.settings.icon_size * 0.22).max(6.0) * 2.0;
+        let arrow_w = 12.0;
+        let min_needed_w = (pad_w + icon_w + text_w + spacing_w + arrow_w).max(45.0);
+
         let w = if cont.width > 0.0 {
-            cont.width
+            cont.width.max(min_needed_w)
         } else {
-            let mut text_w = 0.0;
-            if cont.display_mode != "IconOnly" {
-                text_w += cont.name.chars().count() as f32 * (font_sz * 0.70);
-            }
-            let mut icon_w = 0.0;
-            if cont.display_mode != "NameOnly" {
-                icon_w += cfg.settings.icon_size.max(9.0) + 8.0;
-            }
-            (24.0 + icon_w + text_w + 14.0).max(45.0)
+            min_needed_w
         };
         estimated_widths.push((*orig_idx, w));
         total_row_w += w + 4.0;
@@ -2804,9 +2809,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 2. Sauvegarder les préférences globales du bandeau
                 cfg.settings.bar_position = sui.get_pref_position().to_string();
                 cfg.settings.containers_alignment = sui.get_pref_containers_align().to_string();
-                cfg.settings.bar_height = sui.get_pref_bar_h();
-                cfg.settings.item_height = sui.get_pref_item_h();
                 cfg.settings.icon_size = sui.get_pref_icon_sz();
+                cfg.settings.bar_height = sui.get_pref_bar_h().max(cfg.settings.icon_size + 14.0);
+                cfg.settings.item_height = sui.get_pref_item_h();
                 cfg.settings.container_font_size = sui.get_pref_cont_font();
                 cfg.settings.item_font_size = sui.get_pref_item_font();
                 cfg.settings.bar_bg_color = sui.get_pref_bar_bg_color().to_string();

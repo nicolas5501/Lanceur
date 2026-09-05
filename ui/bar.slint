@@ -236,7 +236,7 @@ export component BarWindow inherits Window {
 
         main_bar := Rectangle {
             width: 100%;
-            height: max(root.bar_h, root.icon_sz + 8px) * max(1, root.rows_count);
+            height: max(root.bar_h, root.icon_sz + 14px) * max(1, root.rows_count);
             background: root.bar_bg_color;
             border-bottom-left-radius: (root.bar_position == "Top" || root.bar_position == "Floating") ? 6px : 0px;
             border-bottom-right-radius: (root.bar_position == "Top" || root.bar_position == "Floating") ? 6px : 0px;
@@ -274,7 +274,7 @@ export component BarWindow inherits Window {
                 alignment: start;
 
                 for row_data[r_idx] in root.rows_list : row_rect := Rectangle {
-                    height: max(root.bar_h, root.icon_sz + 8px);
+                    height: max(root.bar_h, root.icon_sz + 14px);
                     width: 100%;
 
                     HorizontalLayout {
@@ -308,7 +308,7 @@ export component BarWindow inherits Window {
 
                         // Liste Horizontale des Conteneurs de cette ligne (SANS dropdowns pour préserver le Z-Order)
                         for cont[c_idx] in row_data.containers : cont_wrapper := Rectangle {
-                            width: cont.width_val > 0px ? cont.width_val : cont_layout.min-width;
+                            width: cont.width_val > 0px ? max(cont.width_val, cont_layout.min-width) : cont_layout.min-width;
                             height: parent.height;
                             clip: false;
 
@@ -336,19 +336,21 @@ export component BarWindow inherits Window {
                                 animate background { duration: 80ms; }
 
                                 cont_layout := HorizontalLayout {
-                                    padding-left: 10px;
-                                    padding-right: 10px;
-                                    spacing: 6px;
+                                    padding-left: max(10px, root.icon_sz * 0.25);
+                                    padding-right: max(10px, root.icon_sz * 0.25);
+                                    spacing: max(6px, root.icon_sz * 0.22);
                                     alignment: center;
 
                                     if cont.display_mode != "NameOnly" : Rectangle {
-                                        width: root.icon_sz;
-                                        clip: false;
+                                        width: max(20px, root.icon_sz + 4px);
+                                        height: max(20px, root.icon_sz + 4px);
+                                        y: (parent.height - self.height) / 2;
 
                                         if cont.icon_type == "extracted" : Image {
                                             source: cont.icon_image;
                                             width: root.icon_sz;
                                             height: root.icon_sz;
+                                            x: (parent.width - self.width) / 2;
                                             y: (parent.height - self.height) / 2;
                                             image-fit: contain;
                                         }
@@ -454,7 +456,7 @@ export component BarWindow inherits Window {
                 if root.active_dropdown_idx == cont.flat_idx : dropdown_popover := Rectangle {
                     x: max(2px, min(parent.width - self.width - 2px, root.active_dropdown_x));
                     height: max(34px, dropdown_layout.min-height);
-                    y: root.bar_position == "Bottom" ? (parent.height - (max(root.bar_h, root.icon_sz + 8px) * max(1, root.rows_count)) - self.height + 1px) : (root.active_dropdown_y + max(root.bar_h, root.icon_sz + 8px) - 1px);
+                    y: root.bar_position == "Bottom" ? (parent.height - (max(root.bar_h, root.icon_sz + 14px) * max(1, root.rows_count)) - self.height + 1px) : (root.active_dropdown_y + max(root.bar_h, root.icon_sz + 14px) - 1px);
                     width: max(root.active_dropdown_w, max(dropdown_layout.min-width + 12px, (cont.columns_count * max(175px, root.icon_sz + 145px)) + (max(0, cont.columns_count - 1) * 8px) + 12px));
                     background: root.bar_bg_color.with-alpha(1.0);
                     border-radius: 4px;
