@@ -123,13 +123,14 @@ export component DropdownItemRow inherits Rectangle {
         padding-left: (root.hover_style == "SlideAccent" && itm_touch.has-hover) ? 12px : 8px;
         padding-right: 8px;
         spacing: 6px;
-        alignment: center;
+        alignment: start;
         animate x { duration: 100ms; easing: ease-out; }
         animate padding-left { duration: 120ms; easing: ease-out; }
 
         Rectangle {
             width: max(22px, root.icon_sz + 4px);
             height: max(22px, root.icon_sz + 4px);
+            clip: true;
 
             if root.icon_type == "extracted" : Image {
                 source: root.icon_image;

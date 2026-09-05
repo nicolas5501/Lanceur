@@ -203,7 +203,15 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
                         }
                     }
 
-                    let emoji_val = if itm.icon_value.is_empty() {
+                    let emoji_val = if itm.icon_type == "extracted" {
+                        if itm.target.starts_with("http://") || itm.target.starts_with("https://") {
+                            "🌐".to_string()
+                        } else if itm.target.ends_with(".lnk") || Path::new(&itm.target).is_dir() {
+                            "📁".to_string()
+                        } else {
+                            "🚀".to_string()
+                        }
+                    } else if itm.icon_value.is_empty() {
                         "🚀".to_string()
                     } else {
                         itm.icon_value.clone()
@@ -263,11 +271,19 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
                     }
                 }
 
+                let cont_icon_str = if cont.icon_type == "extracted" && (cont.icon.contains('\\') || cont.icon.contains('/') || cont.icon.is_empty()) {
+                    "📦".to_string()
+                } else if cont.icon.is_empty() {
+                    "📦".to_string()
+                } else {
+                    cont.icon.clone()
+                };
+
                 row_containers.push(BarContainerData {
                     flat_idx: flat_idx as i32,
                     id: cont.id.clone().into(),
                     name: cont.name.clone().into(),
-                    icon: cont.icon.clone().into(),
+                    icon: cont_icon_str.into(),
                     icon_type: cont_icon_type.into(),
                     icon_image: cont_icon_img,
                     width_val: cont.width,
@@ -484,20 +500,38 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
             let hk = format_hotkey_display(&itm.hotkey_modifiers, &itm.hotkey_key);
             let col = itm.column.min(num_cols - 1);
             let mut itm_img = slint::Image::default();
-            if itm.icon_type == "extracted" {
+            let mut itm_icon_type = itm.icon_type.clone();
+            if itm_icon_type == "extracted" {
                 let p_extract = if !itm.icon_value.is_empty() { &itm.icon_value } else { &itm.target };
                 if let Some(p) = win32_utils::win32::extract_and_cache_icon(p_extract, &cache) {
                     if let Ok(img) = slint::Image::load_from_path(&p) {
                         itm_img = img;
+                    } else {
+                        itm_icon_type = "emoji".to_string();
                     }
+                } else {
+                    itm_icon_type = "emoji".to_string();
                 }
             }
+            let itm_emoji_val = if itm.icon_type == "extracted" {
+                if itm.target.starts_with("http://") || itm.target.starts_with("https://") {
+                    "🌐".to_string()
+                } else if itm.target.ends_with(".lnk") || Path::new(&itm.target).is_dir() {
+                    "📁".to_string()
+                } else {
+                    "🚀".to_string()
+                }
+            } else if itm.icon_value.is_empty() {
+                "🚀".to_string()
+            } else {
+                itm.icon_value.clone()
+            };
             items_detail.push(ItemDetailData {
                 id: itm.id.clone().into(),
                 name: itm.name.clone().into(),
                 target: itm.target.clone().into(),
-                icon_type: itm.icon_type.clone().into(),
-                icon_value: if itm.icon_type == "extracted" { "🖼️".into() } else { itm.icon_value.clone().into() },
+                icon_type: itm_icon_type.into(),
+                icon_value: itm_emoji_val.into(),
                 icon_image: itm_img,
                 container_id: cont.id.clone().into(),
                 bg_color: itm.bg_color.clone().into(),

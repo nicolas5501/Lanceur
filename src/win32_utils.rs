@@ -1278,9 +1278,35 @@ pub mod win32 {
             return Some(cache_file);
         }
 
-        let legacy_file = cache_dir.join(format!("{}.png", stem));
-        if legacy_file.exists() && std::fs::metadata(&legacy_file).map(|m| m.len() > 0).unwrap_or(false) {
-            return Some(legacy_file);
+        // Vérifier l'ancien format de cache sans suffixe _48
+        let legacy_file1 = cache_dir.join(format!("{}_{:x}.png", stem, hash));
+        if legacy_file1.exists() && std::fs::metadata(&legacy_file1).map(|m| m.len() > 0).unwrap_or(false) {
+            return Some(legacy_file1);
+        }
+
+        let legacy_file2 = cache_dir.join(format!("{}.png", stem));
+        if legacy_file2.exists() && std::fs::metadata(&legacy_file2).map(|m| m.len() > 0).unwrap_or(false) {
+            return Some(legacy_file2);
+        }
+
+        // Vérifier si une icône pour ce stem (ou le stem du raccourci initial) existe déjà dans icon_cache
+        let raw_stem = Path::new(clean_path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        if let Ok(entries) = std::fs::read_dir(cache_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if (name_str.starts_with(&format!("{}_", stem))
+                    || name_str.starts_with(&format!("{}.", stem))
+                    || (!raw_stem.is_empty() && (name_str.starts_with(&format!("{}_", raw_stem)) || name_str.starts_with(&format!("{}.", raw_stem)))))
+                    && name_str.ends_with(".png")
+                {
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.len() > 0 {
+                            return Some(entry.path());
+                        }
+                    }
+                }
+            }
         }
 
         unsafe {
