@@ -608,6 +608,97 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
     settings_win.set_pref_stay_on_top(cfg.settings.stay_on_top);
 }
 
+fn apply_item_editor_to_config(sui: &SettingsWindow, cfg: &mut AppConfig, c_idx: usize) {
+    let item_idx = sui.get_selected_item_index();
+    let name = sui.get_item_edit_name().to_string();
+    let target = sui.get_item_edit_target().to_string();
+    let mut icon_type = sui.get_item_edit_icon_type().to_string();
+    let mut icon_value = sui.get_item_edit_icon_value().to_string();
+    let bg_color = sui.get_item_edit_bg().to_string();
+    let text_color = sui.get_item_edit_text().to_string();
+    let target_cont_raw = sui.get_item_target_container_idx();
+
+    // Si l'icône est par défaut ou extraite et qu'une cible est renseignée, s'assurer de l'extraction
+    if (icon_type == "extracted" || icon_value.is_empty() || icon_value == "🚀") && !target.trim().is_empty() {
+        let cache = cache_dir();
+        let check_path = if icon_type == "extracted" && !icon_value.is_empty() {
+            &icon_value
+        } else {
+            &target
+        };
+        if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(check_path, &cache) {
+            if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
+                icon_type = "extracted".to_string();
+                sui.set_item_edit_icon_type("extracted".into());
+                sui.set_item_edit_icon_image(img);
+                if icon_value.is_empty() || icon_value == "🚀" {
+                    icon_value = target.clone();
+                    sui.set_item_edit_icon_value(icon_value.clone().into());
+                }
+            }
+        }
+    }
+
+    let mut mods = Vec::new();
+    if sui.get_item_edit_mod_ctrl() { mods.push("Control".to_string()); }
+    if sui.get_item_edit_mod_alt() { mods.push("Alt".to_string()); }
+    if sui.get_item_edit_mod_shift() { mods.push("Shift".to_string()); }
+    if sui.get_item_edit_mod_win() { mods.push("Win".to_string()); }
+    let hotkey_key = sui.get_item_edit_hotkey_key().to_string();
+
+    if !name.trim().is_empty() {
+        let target_cont_idx = if target_cont_raw >= 0 && (target_cont_raw as usize) < cfg.containers.len() {
+            target_cont_raw as usize
+        } else {
+            c_idx
+        };
+
+        let max_cols = cfg.containers.get(target_cont_idx).map(|c| c.columns_count.clamp(1, 10)).unwrap_or(1);
+        let col = (sui.get_item_edit_column() as usize).min(max_cols - 1);
+
+        if target_cont_idx != c_idx && c_idx < cfg.containers.len() && item_idx >= 0 && (item_idx as usize) < cfg.containers[c_idx].items.len() {
+            let mut itm = cfg.containers[c_idx].items.remove(item_idx as usize);
+            itm.name = name;
+            itm.target = target;
+            itm.icon_type = icon_type;
+            itm.icon_value = icon_value;
+            itm.bg_color = bg_color;
+            itm.text_color = text_color;
+            itm.hotkey_modifiers = mods;
+            itm.hotkey_key = hotkey_key;
+            itm.column = col;
+            cfg.containers[target_cont_idx].items.push(itm);
+        } else if let Some(cont) = cfg.containers.get_mut(target_cont_idx) {
+            if item_idx >= 0 && (item_idx as usize) < cont.items.len() && target_cont_idx == c_idx {
+                let itm = &mut cont.items[item_idx as usize];
+                itm.name = name;
+                itm.target = target;
+                itm.icon_type = icon_type;
+                itm.icon_value = icon_value;
+                itm.bg_color = bg_color;
+                itm.text_color = text_color;
+                itm.hotkey_modifiers = mods;
+                itm.hotkey_key = hotkey_key;
+                itm.column = col;
+            } else if !target.trim().is_empty() {
+                cont.items.push(LauncherItem {
+                    id: generate_id(),
+                    name,
+                    target,
+                    icon_type,
+                    icon_value,
+                    args: String::new(),
+                    bg_color,
+                    text_color,
+                    hotkey_modifiers: mods,
+                    hotkey_key,
+                    column: col,
+                });
+            }
+        }
+    }
+}
+
 fn add_dropped_file_to_container(file_path: &str, target_cont_idx: usize, config_arc: &Arc<Mutex<AppConfig>>) {
     let p = std::path::Path::new(file_path);
     let mut stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Nouvel Item".to_string());
@@ -1992,108 +2083,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings_window.on_save_item_editor(move || {
             if let Some(sui) = settings_weak.upgrade() {
                 let c_idx = sel_idx.load(Ordering::SeqCst);
-                let item_idx = sui.get_selected_item_index();
-                let name = sui.get_item_edit_name().to_string();
-                let target = sui.get_item_edit_target().to_string();
-                let mut icon_type = sui.get_item_edit_icon_type().to_string();
-                let mut icon_value = sui.get_item_edit_icon_value().to_string();
-                let bg_color = sui.get_item_edit_bg().to_string();
-                let text_color = sui.get_item_edit_text().to_string();
-                let target_cont_raw = sui.get_item_target_container_idx();
+                let mut cfg = cfg_arc.lock().unwrap();
+                apply_item_editor_to_config(&sui, &mut cfg, c_idx);
+                save_config(&cfg);
 
-                // Si l'icône est par défaut ou extraite et qu'une cible est renseignée, s'assurer de l'extraction
-                if (icon_type == "extracted" || icon_value.is_empty() || icon_value == "🚀") && !target.trim().is_empty() {
-                    let cache = cache_dir();
-                    let check_path = if icon_type == "extracted" && !icon_value.is_empty() {
-                        &icon_value
-                    } else {
-                        &target
-                    };
-                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(check_path, &cache) {
-                        if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
-                            icon_type = "extracted".to_string();
-                            sui.set_item_edit_icon_type("extracted".into());
-                            sui.set_item_edit_icon_image(img);
-                            if icon_value.is_empty() || icon_value == "🚀" {
-                                icon_value = target.clone();
-                                sui.set_item_edit_icon_value(icon_value.clone().into());
-                            }
-                        }
-                    }
+                #[cfg(windows)]
+                {
+                    use windows_sys::Win32::Foundation::HWND;
+                    let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
+                    register_all_hotkeys_for_app(tray_hwnd, &cfg);
                 }
 
-                let mut mods = Vec::new();
-                if sui.get_item_edit_mod_ctrl() { mods.push("Control".to_string()); }
-                if sui.get_item_edit_mod_alt() { mods.push("Alt".to_string()); }
-                if sui.get_item_edit_mod_shift() { mods.push("Shift".to_string()); }
-                if sui.get_item_edit_mod_win() { mods.push("Win".to_string()); }
-                let hotkey_key = sui.get_item_edit_hotkey_key().to_string();
-
-                if !name.trim().is_empty() {
-                    let mut cfg = cfg_arc.lock().unwrap();
-                    let target_cont_idx = if target_cont_raw >= 0 && (target_cont_raw as usize) < cfg.containers.len() {
-                        target_cont_raw as usize
-                    } else {
-                        c_idx
-                    };
-
-                    let max_cols = cfg.containers.get(target_cont_idx).map(|c| c.columns_count.clamp(1, 10)).unwrap_or(1);
-                    let col = (sui.get_item_edit_column() as usize).min(max_cols - 1);
-
-                    if target_cont_idx != c_idx && c_idx < cfg.containers.len() && item_idx >= 0 && (item_idx as usize) < cfg.containers[c_idx].items.len() {
-                        let mut itm = cfg.containers[c_idx].items.remove(item_idx as usize);
-                        itm.name = name;
-                        itm.target = target;
-                        itm.icon_type = icon_type;
-                        itm.icon_value = icon_value;
-                        itm.bg_color = bg_color;
-                        itm.text_color = text_color;
-                        itm.hotkey_modifiers = mods;
-                        itm.hotkey_key = hotkey_key;
-                        itm.column = col;
-                        cfg.containers[target_cont_idx].items.push(itm);
-                    } else if let Some(cont) = cfg.containers.get_mut(target_cont_idx) {
-                        if item_idx >= 0 && (item_idx as usize) < cont.items.len() && target_cont_idx == c_idx {
-                            let itm = &mut cont.items[item_idx as usize];
-                            itm.name = name;
-                            itm.target = target;
-                            itm.icon_type = icon_type;
-                            itm.icon_value = icon_value;
-                            itm.bg_color = bg_color;
-                            itm.text_color = text_color;
-                            itm.hotkey_modifiers = mods;
-                            itm.hotkey_key = hotkey_key;
-                            itm.column = col;
-                        } else {
-                            cont.items.push(LauncherItem {
-                                id: generate_id(),
-                                name,
-                                target,
-                                icon_type,
-                                icon_value,
-                                args: String::new(),
-                                bg_color,
-                                text_color,
-                                hotkey_modifiers: mods,
-                                hotkey_key,
-                                column: col,
-                            });
-                        }
-                    }
-                    save_config(&cfg);
-
-                    #[cfg(windows)]
-                    {
-                        use windows_sys::Win32::Foundation::HWND;
-                        let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
-                        register_all_hotkeys_for_app(tray_hwnd, &cfg);
-                    }
-
-                    sui.set_show_item_editor(false);
-                    refresh_settings_ui(&sui, &cfg, c_idx);
-                    if let Some(bui) = bar_weak.upgrade() {
-                        refresh_bar_ui(&bui, &cfg);
-                    }
+                refresh_settings_ui(&sui, &cfg, c_idx);
+                if let Some(bui) = bar_weak.upgrade() {
+                    refresh_bar_ui(&bui, &cfg);
                 }
             }
         });
@@ -2721,7 +2724,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         settings_window.on_save_all_preferences(move || {
             if let Some(sui) = settings_weak.upgrade() {
+                let idx = sel_idx.load(Ordering::SeqCst);
                 let mut cfg = cfg_arc.lock().unwrap();
+
+                // 1. Sauvegarder les données du conteneur en cours d'édition
+                if let Some(cont) = cfg.containers.get_mut(idx) {
+                    let name = sui.get_edit_container_name().to_string();
+                    if !name.is_empty() {
+                        cont.name = name;
+                    }
+                    cont.icon = sui.get_edit_container_icon().to_string();
+                    cont.icon_type = sui.get_edit_container_icon_type().to_string();
+                    cont.width = sui.get_edit_container_width();
+                    cont.display_mode = sui.get_edit_container_display_mode().to_string();
+                    cont.bg_color = sui.get_edit_container_bg().to_string();
+                    cont.text_color = sui.get_edit_container_text().to_string();
+                    cont.row = sui.get_edit_container_row() as usize;
+                    let new_cols = (sui.get_edit_container_columns() as usize + 1).clamp(1, 10);
+                    cont.columns_count = new_cols;
+                    for itm in &mut cont.items {
+                        if itm.column >= new_cols {
+                            itm.column = new_cols - 1;
+                        }
+                    }
+
+                    let mut c_mods = Vec::new();
+                    if sui.get_edit_cont_mod_ctrl() { c_mods.push("Control".to_string()); }
+                    if sui.get_edit_cont_mod_alt() { c_mods.push("Alt".to_string()); }
+                    if sui.get_edit_cont_mod_shift() { c_mods.push("Shift".to_string()); }
+                    if sui.get_edit_cont_mod_win() { c_mods.push("Win".to_string()); }
+                    cont.hotkey_modifiers = c_mods;
+                    cont.hotkey_key = sui.get_edit_cont_hotkey_key().to_string();
+                }
+
+                // 1bis. Sauvegarder les données de l'item/raccourci en cours d'édition (unification globale)
+                apply_item_editor_to_config(&sui, &mut cfg, idx);
+
+                // 2. Sauvegarder les préférences globales du bandeau
                 cfg.settings.bar_position = sui.get_pref_position().to_string();
                 cfg.settings.containers_alignment = sui.get_pref_containers_align().to_string();
                 cfg.settings.bar_height = sui.get_pref_bar_h();

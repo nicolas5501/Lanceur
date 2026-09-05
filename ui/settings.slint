@@ -354,10 +354,9 @@ export component SettingsWindow inherits Window {
         padding: 16px;
         spacing: 12px;
 
-        // Barre d'onglets avec bouton Enregistrer calé tout à droite
+        // Barre d'onglets avec bouton Enregistrer calé sur le bord droit
         HorizontalLayout {
             spacing: 10px;
-            alignment: center;
 
             Rectangle {
                 height: 38px;
@@ -694,12 +693,15 @@ export component SettingsWindow inherits Window {
                                             source: cont.icon_image;
                                             width: 18px;
                                             height: 18px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            image-fit: contain;
                                         }
                                         if cont.icon_type != "extracted" : Text {
+                                            width: 100%;
+                                            height: 100%;
                                             text: cont.icon != "" ? cont.icon : "📦";
-                                            font-size: 13px;
+                                            font-size: 14px;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                         }
@@ -844,28 +846,21 @@ export component SettingsWindow inherits Window {
                         spacing: 8px;
 
                         HorizontalLayout {
-                            alignment: space-between;
-                            HorizontalLayout {
-                                spacing: 8px;
-                                alignment: center;
-                                Text {
-                                    text: "⚙️ Paramètres du Conteneur :";
-                                    font-size: 13px;
-                                    font-weight: 800;
-                                    color: #93c5fd;
-                                    vertical-alignment: center;
-                                }
-                                Text {
-                                    text: root.edit_container_name != "" ? ("\"" + root.edit_container_name + "\"") : "(aucun)";
-                                    font-size: 13px;
-                                    font-weight: 800;
-                                    color: #38bdf8;
-                                    vertical-alignment: center;
-                                }
+                            alignment: start;
+                            spacing: 8px;
+                            Text {
+                                text: "⚙️ Paramètres du Conteneur :";
+                                font-size: 13px;
+                                font-weight: 800;
+                                color: #93c5fd;
+                                vertical-alignment: center;
                             }
-                            Button {
-                                text: "💾 Enregistrer le conteneur";
-                                clicked => { root.save_container_info(); }
+                            Text {
+                                text: root.edit_container_name != "" ? ("\"" + root.edit_container_name + "\"") : "(aucun)";
+                                font-size: 13px;
+                                font-weight: 800;
+                                color: #38bdf8;
+                                vertical-alignment: center;
                             }
                         }
 
@@ -912,12 +907,15 @@ export component SettingsWindow inherits Window {
                                             source: root.edit_container_icon_image;
                                             width: 20px;
                                             height: 20px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            image-fit: contain;
                                         }
                                         if root.edit_container_icon_type != "extracted" : Text {
+                                            width: 100%;
+                                            height: 100%;
                                             text: root.edit_container_icon != "" ? root.edit_container_icon : "📦";
-                                            font-size: 15px;
+                                            font-size: 16px;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                         }
@@ -1356,10 +1354,13 @@ export component SettingsWindow inherits Window {
                                             source: itm.icon_image;
                                             width: 18px;
                                             height: 18px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            image-fit: contain;
                                         }
                                         if itm.icon_type != "extracted" : Text {
+                                            width: 100%;
+                                            height: 100%;
                                             text: itm.icon_value != "" ? itm.icon_value : "🚀";
                                             font-size: 14px;
                                             horizontal-alignment: center;
@@ -1538,17 +1539,21 @@ export component SettingsWindow inherits Window {
 
                             // Barre d'en-tête de l'éditeur
                             HorizontalLayout {
-                                alignment: space-between;
+                                alignment: start;
+                                spacing: 8px;
                                 Text {
-                                    text: root.selected_item_index >= 0 ? "Éditer le raccourci sélectionné :" : "Nouveau raccourci :";
+                                    text: root.selected_item_index >= 0 ? "✏️ Éditer le raccourci sélectionné :" : "✨ Nouveau raccourci :";
                                     font-size: 12px;
                                     color: #93c5fd;
                                     font-weight: 700;
                                     vertical-alignment: center;
                                 }
-                                Button {
-                                    text: "💾 Enregistrer le raccourci";
-                                    clicked => { root.save_item_editor(); }
+                                if root.selected_item_index >= 0 : Text {
+                                    text: root.item_edit_name != "" ? ("\"" + root.item_edit_name + "\"") : "";
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    color: #38bdf8;
+                                    vertical-alignment: center;
                                 }
                             }
 
@@ -1616,12 +1621,15 @@ export component SettingsWindow inherits Window {
                                             source: root.item_edit_icon_image;
                                             width: 20px;
                                             height: 20px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            image-fit: contain;
                                         }
                                         if root.item_edit_icon_type != "extracted" : Text {
+                                            width: 100%;
+                                            height: 100%;
                                             text: root.item_edit_icon_value != "" ? root.item_edit_icon_value : "🚀";
-                                            font-size: 15px;
+                                            font-size: 16px;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                         }

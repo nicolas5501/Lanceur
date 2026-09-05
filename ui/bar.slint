@@ -135,12 +135,14 @@ export component DropdownItemRow inherits Rectangle {
                 source: root.icon_image;
                 width: root.icon_sz;
                 height: root.icon_sz;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
                 image-fit: contain;
-                horizontal-alignment: center;
-                vertical-alignment: center;
             }
 
             if root.icon_type != "extracted" : Text {
+                width: 100%;
+                height: 100%;
                 text: root.icon_emoji;
                 font-size: root.icon_sz;
                 horizontal-alignment: center;
@@ -340,25 +342,22 @@ export component BarWindow inherits Window {
                                     alignment: center;
 
                                     if cont.display_mode != "NameOnly" : Rectangle {
-                                        width: max(22px, root.icon_sz + 4px);
-                                        height: max(22px, root.icon_sz + 4px);
+                                        width: root.icon_sz;
+                                        clip: false;
 
                                         if cont.icon_type == "extracted" : Image {
                                             source: cont.icon_image;
                                             width: root.icon_sz;
                                             height: root.icon_sz;
-                                            x: (parent.width - self.width) / 2;
                                             y: (parent.height - self.height) / 2;
                                             image-fit: contain;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
                                         }
 
                                         if cont.icon_type != "extracted" : Text {
+                                            width: 100%;
+                                            height: 100%;
                                             text: cont.icon;
                                             font-size: root.icon_sz;
-                                            x: (parent.width - self.width) / 2;
-                                            y: (parent.height - self.height) / 2;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                         }
@@ -454,7 +453,7 @@ export component BarWindow inherits Window {
 
                 if root.active_dropdown_idx == cont.flat_idx : dropdown_popover := Rectangle {
                     x: max(2px, min(parent.width - self.width - 2px, root.active_dropdown_x));
-                    height: max(34px, (cont.max_items_in_col * (max(root.item_h, root.icon_sz + 6px) + 2px)) + 12px);
+                    height: max(34px, dropdown_layout.min-height);
                     y: root.bar_position == "Bottom" ? (parent.height - (max(root.bar_h, root.icon_sz + 8px) * max(1, root.rows_count)) - self.height + 1px) : (root.active_dropdown_y + max(root.bar_h, root.icon_sz + 8px) - 1px);
                     width: max(root.active_dropdown_w, max(dropdown_layout.min-width + 12px, (cont.columns_count * max(175px, root.icon_sz + 145px)) + (max(0, cont.columns_count - 1) * 8px) + 12px));
                     background: root.bar_bg_color.with-alpha(1.0);
@@ -489,6 +488,7 @@ export component BarWindow inherits Window {
                             }
 
                             VerticalLayout {
+                                alignment: start;
                                 spacing: 2px;
                                 min-width: max(170px, root.icon_sz + 140px);
 
