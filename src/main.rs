@@ -8,15 +8,14 @@ use config::*;
 use slint::{Color, ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 slint::include_modules!();
 
-// Memory trimming disabled as SetProcessWorkingSetSize invalidates GDI buffers in Slint
-fn trim_process_memory() {}
+fn trim_process_memory() {
+    win32_utils::win32::trim_process_memory();
+}
 
 fn parse_hex_color(hex_str: &str, default: Color) -> Color {
     let s = hex_str.trim().trim_start_matches('#');
@@ -706,20 +705,29 @@ fn add_dropped_file_to_container(file_path: &str, target_cont_idx: usize, config
         stem = file_path.to_string();
     }
     
+    // Si le fichier glissé est un raccourci .lnk, résoudre la véritable cible du programme et ses arguments
+    let (real_target, real_args) = if let Some((target_path, args)) = win32_utils::win32::resolve_lnk_target(file_path) {
+        (target_path.to_string_lossy().to_string(), args)
+    } else {
+        (file_path.to_string(), String::new())
+    };
+
     let cache = cache_dir();
-    let has_icon = win32_utils::win32::extract_and_cache_icon(file_path, &cache).is_some();
+    let icon_source = if Path::new(&real_target).exists() { real_target.as_str() } else { file_path };
+    let has_icon = win32_utils::win32::extract_and_cache_icon(icon_source, &cache).is_some()
+        || win32_utils::win32::extract_and_cache_icon(file_path, &cache).is_some();
     let icon_type = if has_icon { "extracted".to_string() } else { "emoji".to_string() };
-    let icon_val = if has_icon { "".to_string() } else {
+    let icon_val = if has_icon { icon_source.to_string() } else {
         if p.is_dir() { "📁".to_string() } else { "🚀".to_string() }
     };
 
     let new_item = LauncherItem {
         id: generate_id(),
         name: stem,
-        target: file_path.to_string(),
+        target: real_target,
         icon_type,
         icon_value: icon_val,
-        args: String::new(),
+        args: real_args,
         bg_color: "".to_string(),
         text_color: "".to_string(),
         hotkey_modifiers: Vec::new(),
@@ -1261,7 +1269,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if target_to_launch.is_some() { break; }
                         }
                         if let Some(target) = target_to_launch {
-                            let _ = open::that(&target);
+                            let _ = win32_utils::win32::open_path_or_url(&target);
                             trim_process_memory();
                         }
                     }
@@ -1359,7 +1367,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         bar_window.on_launch_item(move |target| {
             let target_str = target.to_string();
-            let _ = open::that(&target_str);
+            let _ = win32_utils::win32::open_path_or_url(&target_str);
             trim_process_memory();
         });
     }
@@ -1904,13 +1912,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         settings_window.on_browse_container_icon_file(move || {
             if let Some(sui) = settings_weak.upgrade() {
-                if let Some(file) = rfd::FileDialog::new()
-                    .add_filter("Exécutables & Icônes (*.exe, *.lnk, *.ico, *.dll)", &["exe", "lnk", "ico", "dll"])
-                    .pick_file() 
-                {
+                if let Some(file) = win32_utils::win32::pick_file_dialog(
+                    Some("Sélectionner une icône"),
+                    Some("Exécutables & Icônes (*.exe, *.lnk, *.ico, *.dll)"),
+                    Some(&["exe", "lnk", "ico", "dll"]),
+                ) {
                     let path_str = file.to_string_lossy().to_string();
+                    let resolved_icon = if let Some((target_path, _)) = win32_utils::win32::resolve_lnk_target(&path_str) {
+                        target_path.to_string_lossy().to_string()
+                    } else {
+                        path_str.clone()
+                    };
+                    let icon_source = if Path::new(&resolved_icon).exists() { &resolved_icon } else { &path_str };
                     let cache = cache_dir();
-                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(&path_str, &cache) {
+                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(icon_source, &cache) {
                         if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
                             sui.set_edit_container_icon_type("extracted".into());
                             sui.set_edit_container_icon_image(img);
@@ -1918,7 +1933,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let mut cfg = cfg_arc.lock().unwrap();
                             if let Some(cont) = cfg.containers.get_mut(idx) {
                                 cont.icon_type = "extracted".to_string();
-                                cont.icon_path = path_str.clone();
+                                cont.icon_path = icon_source.clone();
                                 save_config(&cfg);
                                 if let Some(bui) = bar_weak.upgrade() {
                                     refresh_bar_ui(&bui, &cfg);
@@ -1935,7 +1950,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 5ter. Ouvrir le site web Emojipedia pour choisir et copier des émojis
     {
         settings_window.on_open_emoji_website(move || {
-            let _ = open::that("https://emojipedia.org/");
+            let _ = win32_utils::win32::open_path_or_url("https://emojipedia.org/");
         });
     }
 
@@ -2018,9 +2033,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let settings_weak = settings_window.as_weak();
         settings_window.on_browse_item_target(move || {
             if let Some(sui) = settings_weak.upgrade() {
-                if let Some(file) = rfd::FileDialog::new().pick_file() {
+                if let Some(file) = win32_utils::win32::pick_file_dialog(
+                    Some("Sélectionner une application ou un fichier"),
+                    None,
+                    None,
+                ) {
                     let path_str = file.to_string_lossy().to_string();
-                    sui.set_item_edit_target(path_str.clone().into());
+                    let full_target = if let Some((t, a)) = win32_utils::win32::resolve_lnk_target(&path_str) {
+                        if a.trim().is_empty() {
+                            t.to_string_lossy().to_string()
+                        } else {
+                            format!("\"{}\" {}", t.display(), a.trim())
+                        }
+                    } else {
+                        path_str.clone()
+                    };
+                    sui.set_item_edit_target(full_target.into());
                     if sui.get_item_edit_name().is_empty() {
                         if let Some(stem) = file.file_stem() {
                             sui.set_item_edit_name(stem.to_string_lossy().to_string().into());
@@ -2028,11 +2056,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     // Extraction automatique de l'icône de l'application visée
                     let cache = cache_dir();
-                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(&path_str, &cache) {
+                    let raw_target = if let Some((t, _)) = win32_utils::win32::resolve_lnk_target(&path_str) {
+                        t.to_string_lossy().to_string()
+                    } else {
+                        path_str.clone()
+                    };
+                    let icon_source = if Path::new(&raw_target).exists() { &raw_target } else { &path_str };
+                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(icon_source, &cache) {
                         if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
                             sui.set_item_edit_icon_type("extracted".into());
                             sui.set_item_edit_icon_image(img);
-                            sui.set_item_edit_icon_value(path_str.clone().into());
+                            sui.set_item_edit_icon_value(icon_source.clone().into());
                         }
                     }
                 }
@@ -2045,17 +2079,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let settings_weak = settings_window.as_weak();
         settings_window.on_browse_item_icon_file(move || {
             if let Some(sui) = settings_weak.upgrade() {
-                if let Some(file) = rfd::FileDialog::new()
-                    .add_filter("Exécutables & Icônes (*.exe, *.lnk, *.ico, *.dll)", &["exe", "lnk", "ico", "dll"])
-                    .pick_file() 
-                {
+                if let Some(file) = win32_utils::win32::pick_file_dialog(
+                    Some("Sélectionner une icône"),
+                    Some("Exécutables & Icônes (*.exe, *.lnk, *.ico, *.dll)"),
+                    Some(&["exe", "lnk", "ico", "dll"]),
+                ) {
                     let path_str = file.to_string_lossy().to_string();
+                    let resolved_icon = if let Some((target_path, _)) = win32_utils::win32::resolve_lnk_target(&path_str) {
+                        target_path.to_string_lossy().to_string()
+                    } else {
+                        path_str.clone()
+                    };
+                    let icon_source = if Path::new(&resolved_icon).exists() { &resolved_icon } else { &path_str };
                     let cache = cache_dir();
-                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(&path_str, &cache) {
+                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(icon_source, &cache) {
                         if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
                             sui.set_item_edit_icon_type("extracted".into());
                             sui.set_item_edit_icon_image(img);
-                            sui.set_item_edit_icon_value(path_str.clone().into());
+                            sui.set_item_edit_icon_value(icon_source.clone().into());
                         }
                     }
                 }

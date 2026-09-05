@@ -908,11 +908,157 @@ pub mod win32 {
         ) -> usize;
     }
 
+    use windows_sys::core::GUID;
+
+    const CLSID_SHELL_LINK: GUID = GUID {
+        data1: 0x00021401,
+        data2: 0x0000,
+        data3: 0x0000,
+        data4: [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
+    };
+
+    const IID_ISHELL_LINK_W: GUID = GUID {
+        data1: 0x000214F9,
+        data2: 0x0000,
+        data3: 0x0000,
+        data4: [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
+    };
+
+    const IID_IPERSIST_FILE: GUID = GUID {
+        data1: 0x0000010b,
+        data2: 0x0000,
+        data3: 0x0000,
+        data4: [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
+    };
+
+    #[repr(C)]
+    struct IUnknownVtbl {
+        query_interface: unsafe extern "system" fn(*mut std::ffi::c_void, *const GUID, *mut *mut std::ffi::c_void) -> i32,
+        add_ref: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+        release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+    }
+
+    #[repr(C)]
+    struct IPersistFileVtbl {
+        unknown: IUnknownVtbl,
+        get_class_id: unsafe extern "system" fn(*mut std::ffi::c_void, *mut GUID) -> i32,
+        is_dirty: unsafe extern "system" fn(*mut std::ffi::c_void) -> i32,
+        load: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16, u32) -> i32,
+        save: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16, i32) -> i32,
+        save_completed: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16) -> i32,
+        get_cur_file: unsafe extern "system" fn(*mut std::ffi::c_void, *mut *mut u16) -> i32,
+    }
+
+    #[repr(C)]
+    struct IShellLinkWVtbl {
+        unknown: IUnknownVtbl,
+        get_path: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, i32, *mut std::ffi::c_void, u32) -> i32,
+        get_id_list: unsafe extern "system" fn(*mut std::ffi::c_void, *mut *mut std::ffi::c_void) -> i32,
+        set_id_list: unsafe extern "system" fn(*mut std::ffi::c_void, *const std::ffi::c_void) -> i32,
+        get_description: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, i32) -> i32,
+        set_description: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16) -> i32,
+        get_working_directory: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, i32) -> i32,
+        set_working_directory: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16) -> i32,
+        get_arguments: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, i32) -> i32,
+        set_arguments: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16) -> i32,
+        get_hotkey: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16) -> i32,
+        set_hotkey: unsafe extern "system" fn(*mut std::ffi::c_void, u16) -> i32,
+        get_show_cmd: unsafe extern "system" fn(*mut std::ffi::c_void, *mut i32) -> i32,
+        set_show_cmd: unsafe extern "system" fn(*mut std::ffi::c_void, i32) -> i32,
+        get_icon_location: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, i32, *mut i32) -> i32,
+        set_icon_location: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16, i32) -> i32,
+        set_relative_path: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16, u32) -> i32,
+        resolve: unsafe extern "system" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, u32) -> i32,
+        set_path: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16) -> i32,
+    }
+
+    /// Résout la cible réelle d'un raccourci Windows (.lnk) ainsi que ses arguments
+    pub fn resolve_lnk_target(lnk_path: &str) -> Option<(PathBuf, String)> {
+        let clean_path = lnk_path.trim().trim_matches('"');
+        if !clean_path.to_lowercase().ends_with(".lnk") || !Path::new(clean_path).exists() {
+            return None;
+        }
+
+        unsafe {
+            windows_sys::Win32::System::Com::CoInitialize(std::ptr::null_mut());
+
+            let mut p_shell_link: *mut std::ffi::c_void = std::ptr::null_mut();
+            let hr = windows_sys::Win32::System::Com::CoCreateInstance(
+                &CLSID_SHELL_LINK as *const _ as *const _,
+                std::ptr::null_mut(),
+                1, // CLSCTX_INPROC_SERVER
+                &IID_ISHELL_LINK_W as *const _ as *const _,
+                &mut p_shell_link,
+            );
+            if hr < 0 || p_shell_link.is_null() {
+                return None;
+            }
+
+            let link_vtbl = &**(p_shell_link as *mut *mut IShellLinkWVtbl);
+
+            let mut p_persist_file: *mut std::ffi::c_void = std::ptr::null_mut();
+            let hr2 = (link_vtbl.unknown.query_interface)(
+                p_shell_link,
+                &IID_IPERSIST_FILE,
+                &mut p_persist_file,
+            );
+
+            let mut result = None;
+            if hr2 >= 0 && !p_persist_file.is_null() {
+                let persist_vtbl = &**(p_persist_file as *mut *mut IPersistFileVtbl);
+
+                let wide_lnk = to_wide_null(clean_path);
+                let hr3 = (persist_vtbl.load)(p_persist_file, wide_lnk.as_ptr(), 0);
+                if hr3 >= 0 {
+                    // SLR_NO_UI (0x1) | SLR_ANY_MATCH (0x2)
+                    let _ = (link_vtbl.resolve)(p_shell_link, std::ptr::null_mut(), 1 | 2);
+
+                    let mut path_buf = [0u16; 1024];
+                    let mut args_buf = [0u16; 1024];
+
+                    let hr_path = (link_vtbl.get_path)(
+                        p_shell_link,
+                        path_buf.as_mut_ptr(),
+                        path_buf.len() as i32,
+                        std::ptr::null_mut(),
+                        0,
+                    );
+                    let _ = (link_vtbl.get_arguments)(
+                        p_shell_link,
+                        args_buf.as_mut_ptr(),
+                        args_buf.len() as i32,
+                    );
+
+                    if hr_path >= 0 {
+                        let len = path_buf.iter().position(|&c| c == 0).unwrap_or(path_buf.len());
+                        let target_str = String::from_utf16_lossy(&path_buf[..len]);
+                        if !target_str.is_empty() {
+                            let arg_len = args_buf.iter().position(|&c| c == 0).unwrap_or(args_buf.len());
+                            let args_str = String::from_utf16_lossy(&args_buf[..arg_len]);
+                            result = Some((PathBuf::from(target_str), args_str));
+                        }
+                    }
+                }
+                (persist_vtbl.unknown.release)(p_persist_file);
+            }
+
+            (link_vtbl.unknown.release)(p_shell_link);
+            result
+        }
+    }
+
     /// Recherche et résolution du chemin réel d'un exécutable (.exe, .lnk, commande PATH, dossier Windows)
-    fn resolve_target_executable(raw_path: &str) -> Option<String> {
+    pub fn resolve_target_executable(raw_path: &str) -> Option<String> {
         let trimmed = raw_path.trim().trim_matches('"');
         if trimmed.is_empty() {
             return None;
+        }
+
+        // 0. Si c'est un raccourci .lnk, résoudre sa cible réelle
+        if trimmed.to_lowercase().ends_with(".lnk") {
+            if let Some((target, _)) = resolve_lnk_target(trimmed) {
+                return Some(target.to_string_lossy().to_string());
+            }
         }
 
         // 1. Si le chemin existe directement
@@ -1002,6 +1148,19 @@ pub mod win32 {
             if width <= 0 || height <= 0 {
                 width = 32;
                 height = 32;
+            }
+
+            // Plafonner la dimension à 48x48 max pour préserver la mémoire RAM dans Slint
+            // (Une icône 256x256 non compressée pèse 262 Ko en RAM, alors que 48x48 ne pèse que 9 Ko)
+            const MAX_ICON_DIM: i32 = 48;
+            if width > MAX_ICON_DIM || height > MAX_ICON_DIM {
+                if width >= height {
+                    height = ((height as f32 * (MAX_ICON_DIM as f32 / width as f32)).round() as i32).max(16);
+                    width = MAX_ICON_DIM;
+                } else {
+                    width = ((width as f32 * (MAX_ICON_DIM as f32 / height as f32)).round() as i32).max(16);
+                    height = MAX_ICON_DIM;
+                }
             }
 
             let hdc_screen = GetDC(std::ptr::null_mut());
@@ -1114,7 +1273,7 @@ pub mod win32 {
         let hash = std::hash::Hasher::finish(&hasher);
 
         let _ = std::fs::create_dir_all(cache_dir);
-        let cache_file = cache_dir.join(format!("{}_{:x}.png", stem, hash));
+        let cache_file = cache_dir.join(format!("{}_{:x}_48.png", stem, hash));
         if cache_file.exists() && std::fs::metadata(&cache_file).map(|m| m.len() > 0).unwrap_or(false) {
             return Some(cache_file);
         }
@@ -1270,6 +1429,132 @@ pub mod win32 {
             }
         }
     }
+
+    #[repr(C)]
+    struct OPENFILENAMEW {
+        l_struct_size: u32,
+        hwnd_owner: HWND,
+        h_instance: HWND,
+        lpstr_filter: *const u16,
+        lpstr_custom_filter: *mut u16,
+        n_max_cust_filter: u32,
+        n_filter_index: u32,
+        lpstr_file: *mut u16,
+        n_max_file: u32,
+        lpstr_file_title: *mut u16,
+        n_max_file_title: u32,
+        lpstr_initial_dir: *const u16,
+        lpstr_title: *const u16,
+        flags: u32,
+        n_file_offset: u16,
+        n_file_extension: u16,
+        lpstr_def_ext: *const u16,
+        l_cust_data: isize,
+        lpfn_hook: Option<unsafe extern "system" fn(HWND, u32, usize, isize) -> usize>,
+        lp_template_name: *const u16,
+        pv_reserved: *mut std::ffi::c_void,
+        dw_reserved: u32,
+        flags_ex: u32,
+    }
+
+    #[link(name = "comdlg32")]
+    unsafe extern "system" {
+        fn GetOpenFileNameW(lpofn: *mut OPENFILENAMEW) -> i32;
+    }
+
+    /// Boîte de dialogue native Windows pour choisir un fichier (remplace la dépendance rfd)
+    pub fn pick_file_dialog(
+        title: Option<&str>,
+        filter_description: Option<&str>,
+        filter_extensions: Option<&[&str]>,
+    ) -> Option<PathBuf> {
+        let mut filter_utf16: Vec<u16> = Vec::new();
+        if let (Some(desc), Some(exts)) = (filter_description, filter_extensions) {
+            filter_utf16.extend(desc.encode_utf16());
+            filter_utf16.push(0);
+            let mut pattern = String::new();
+            for (idx, ext) in exts.iter().enumerate() {
+                if idx > 0 {
+                    pattern.push(';');
+                }
+                if ext.starts_with("*.") {
+                    pattern.push_str(ext);
+                } else if ext.starts_with('.') {
+                    pattern.push('*');
+                    pattern.push_str(ext);
+                } else {
+                    pattern.push_str("*.");
+                    pattern.push_str(ext);
+                }
+            }
+            filter_utf16.extend(pattern.encode_utf16());
+            filter_utf16.push(0);
+        }
+        // Toujours ajouter "Tous les fichiers (*.*)"
+        filter_utf16.extend("Tous les fichiers (*.*)".encode_utf16());
+        filter_utf16.push(0);
+        filter_utf16.extend("*.*".encode_utf16());
+        filter_utf16.push(0);
+        filter_utf16.push(0); // Terminateur double-null
+
+        let title_utf16: Option<Vec<u16>> = title.map(to_wide_null);
+        let mut file_buf: [u16; 1024] = [0; 1024];
+
+        let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+        ofn.l_struct_size = std::mem::size_of::<OPENFILENAMEW>() as u32;
+        ofn.lpstr_filter = filter_utf16.as_ptr();
+        ofn.n_filter_index = 1;
+        ofn.lpstr_file = file_buf.as_mut_ptr();
+        ofn.n_max_file = file_buf.len() as u32;
+        ofn.lpstr_title = title_utf16.as_ref().map(|v| v.as_ptr()).unwrap_or(std::ptr::null());
+        // OFN_EXPLORER (0x80000) | OFN_FILEMUSTEXIST (0x1000) | OFN_PATHMUSTEXIST (0x800) | OFN_ENABLESIZING (0x800000)
+        ofn.flags = 0x00080000 | 0x00001000 | 0x00000800 | 0x00800000;
+
+        unsafe {
+            if GetOpenFileNameW(&mut ofn) != 0 {
+                let len = file_buf.iter().position(|&c| c == 0).unwrap_or(file_buf.len());
+                let path_str = String::from_utf16_lossy(&file_buf[..len]);
+                if !path_str.is_empty() {
+                    Some(PathBuf::from(path_str))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Ouvre un fichier, dossier, application ou URL avec le programme par défaut de Windows (remplace la dépendance open)
+    pub fn open_path_or_url(target: &str) -> bool {
+        let clean = target.trim().trim_matches('"');
+        if clean.is_empty() {
+            return false;
+        }
+        let target_wide = to_wide_null(clean);
+        let operation = to_wide_null("open");
+        unsafe {
+            let res = windows_sys::Win32::UI::Shell::ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                target_wide.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL as i32,
+            );
+            (res as isize) > 32
+        }
+    }
+
+    /// Défragmente le tas mémoire et restitue les pages physiques inutilisées à Windows sans toucher aux buffers GDI
+    pub fn trim_process_memory() {
+        unsafe {
+            let heap = windows_sys::Win32::System::Memory::GetProcessHeap();
+            if !heap.is_null() {
+                windows_sys::Win32::System::Memory::HeapCompact(heap, 0);
+            }
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -1295,4 +1580,8 @@ pub mod win32 {
     pub fn find_bar_hwnd() -> *mut std::ffi::c_void { std::ptr::null_mut() }
     pub fn setup_settings_window_styles(_hwnd: *mut std::ffi::c_void) {}
     pub fn set_drop_callback<F>(_cb: F) where F: Fn(Vec<String>, i32, i32, bool) + Send + Sync + 'static {}
+    pub fn pick_file_dialog(_title: Option<&str>, _filter_desc: Option<&str>, _filter_exts: Option<&[&str]>) -> Option<PathBuf> { None }
+    pub fn open_path_or_url(_target: &str) -> bool { true }
+    pub fn trim_process_memory() {}
+    pub fn resolve_lnk_target(_lnk: &str) -> Option<(PathBuf, String)> { None }
 }

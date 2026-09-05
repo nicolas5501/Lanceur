@@ -7,7 +7,7 @@
 **/*.rs.bk
 
 # Local User Configuration & Cache (optionnel pour ne pas écraser les chemins locaux)
-launcher_config.json
+launcher_config*
 /icon_cache/
 shortcuts.json
 

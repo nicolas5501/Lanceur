@@ -271,8 +271,15 @@ pub fn load_config() -> AppConfig {
     let path = config_path();
     if path.exists() {
         if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(cfg) = serde_json::from_str::<AppConfig>(&content) {
-                return cfg;
+            let clean = content.trim_start_matches('\u{feff}');
+            match serde_json::from_str::<AppConfig>(clean) {
+                Ok(cfg) => return cfg,
+                Err(e) => {
+                    eprintln!("[CONFIG ERROR] Impossible de parser {:?}: {}", path, e);
+                    let backup_path = path.with_extension("corrupted.json");
+                    let _ = fs::copy(&path, &backup_path);
+                    eprintln!("[CONFIG ERROR] Sauvegarde de secours créée dans {:?}", backup_path);
+                }
             }
         }
     }
