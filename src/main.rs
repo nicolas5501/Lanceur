@@ -1296,19 +1296,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let item_idx_flat = (hk_id - 20000) as usize;
                         let cfg = cfg_for_hk.lock().unwrap();
                         let mut count = 0usize;
-                        let mut target_to_launch: Option<String> = None;
+                        let mut target_to_launch: Option<(String, String)> = None;
                         for cont in &cfg.containers {
                             for itm in &cont.items {
                                 if count == item_idx_flat {
-                                    target_to_launch = Some(itm.target.clone());
+                                    target_to_launch = Some((itm.target.clone(), itm.args.clone()));
                                     break;
                                 }
                                 count += 1;
                             }
                             if target_to_launch.is_some() { break; }
                         }
-                        if let Some(target) = target_to_launch {
-                            let _ = win32_utils::win32::open_path_or_url(&target);
+                        if let Some((target, args)) = target_to_launch {
+                            let _ = win32_utils::win32::open_target(&target, &args);
                             trim_process_memory();
                         }
                     }
@@ -1404,9 +1404,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ================= CALLBACKS DU BANDEAU (BAR WINDOW) =================
     {
-        bar_window.on_launch_item(move |target| {
-            let target_str = target.to_string();
-            let _ = win32_utils::win32::open_path_or_url(&target_str);
+        let cfg_for_launch = app_config.clone();
+        bar_window.on_launch_item(move |target_or_id| {
+            let s = target_or_id.to_string();
+            let cfg = cfg_for_launch.lock().unwrap();
+            let mut launched = false;
+            for cont in &cfg.containers {
+                for itm in &cont.items {
+                    if itm.id == s {
+                        let _ = win32_utils::win32::open_target(&itm.target, &itm.args);
+                        launched = true;
+                        break;
+                    }
+                }
+                if launched { break; }
+            }
+            if !launched {
+                let _ = win32_utils::win32::open_target(&s, "");
+            }
             trim_process_memory();
         });
     }
@@ -1554,41 +1569,144 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    let bring_settings_window_to_front = || {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::HWND;
+            use windows_sys::Win32::UI::WindowsAndMessaging::*;
+            let bring = || {
+                let hwnd: HWND = win32_utils::win32::find_settings_hwnd();
+                if !hwnd.is_null() {
+                    unsafe {
+                        let mut pid: u32 = 0;
+                        GetWindowThreadProcessId(hwnd, &mut pid);
+                        if pid == windows_sys::Win32::System::Threading::GetCurrentProcessId() {
+                            win32_utils::win32::setup_settings_window_styles(hwnd);
+                            ShowWindow(hwnd, SW_RESTORE);
+                            SetForegroundWindow(hwnd);
+                            BringWindowToTop(hwnd);
+                            windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(hwnd);
+                        }
+                    }
+                }
+            };
+            bring();
+            slint::Timer::single_shot(std::time::Duration::from_millis(100), move || {
+                bring();
+            });
+        }
+    };
+
     {
         let settings_weak = settings_window.as_weak();
         let cfg_arc = app_config.clone();
         let sel_idx = selected_container_idx.clone();
+        let bring_fn = bring_settings_window_to_front.clone();
 
         bar_window.on_open_settings(move || {
             if let Some(sui) = settings_weak.upgrade() {
                 let cfg = cfg_arc.lock().unwrap();
                 refresh_settings_ui(&sui, &cfg, sel_idx.load(Ordering::SeqCst));
                 let _ = sui.show();
+                bring_fn();
+            }
+        });
+    }
 
-                #[cfg(windows)]
-                {
-                    use windows_sys::Win32::Foundation::HWND;
-                    use windows_sys::Win32::UI::WindowsAndMessaging::*;
-                    let bring_to_front = || {
-                        let hwnd: HWND = win32_utils::win32::find_settings_hwnd();
-                        if !hwnd.is_null() {
-                            unsafe {
-                                let mut pid: u32 = 0;
-                                GetWindowThreadProcessId(hwnd, &mut pid);
-                                if pid == windows_sys::Win32::System::Threading::GetCurrentProcessId() {
-                                    win32_utils::win32::setup_settings_window_styles(hwnd);
-                                    ShowWindow(hwnd, SW_RESTORE);
-                                    SetForegroundWindow(hwnd);
-                                    BringWindowToTop(hwnd);
-                                    windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(hwnd);
+    {
+        let bar_weak = bar_window.as_weak();
+        let settings_weak = settings_window.as_weak();
+        let cfg_arc = app_config.clone();
+        let sel_idx = selected_container_idx.clone();
+        let bring_fn = bring_settings_window_to_front.clone();
+
+        bar_window.on_item_right_clicked(move |item_id_slint| {
+            let item_id = item_id_slint.to_string();
+            let (cont_idx, item_idx, itm_name) = {
+                let cfg = cfg_arc.lock().unwrap();
+                let mut found = None;
+                for (c_i, cont) in cfg.containers.iter().enumerate() {
+                    for (i_i, itm) in cont.items.iter().enumerate() {
+                        if itm.id == item_id {
+                            found = Some((c_i, i_i, itm.name.clone()));
+                            break;
+                        }
+                    }
+                    if found.is_some() { break; }
+                }
+                match found {
+                    Some(val) => val,
+                    None => return,
+                }
+            };
+
+            #[cfg(windows)]
+            {
+                use windows_sys::Win32::Foundation::HWND;
+                let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
+                let action = win32_utils::win32::show_item_context_menu(hwnd, &itm_name);
+                match action {
+                    win32_utils::win32::IDM_ITEM_EDIT => {
+                        // Fermer le menu déroulant du bandeau
+                        if let Some(bui) = bar_weak.upgrade() {
+                            bui.set_active_dropdown_idx(-1);
+                            bui.invoke_dropdown_state_changed(false);
+                        }
+                        // Sélectionner le conteneur dans l'état partagé
+                        sel_idx.store(cont_idx, Ordering::SeqCst);
+                        if let Some(sui) = settings_weak.upgrade() {
+                            let cfg = cfg_arc.lock().unwrap();
+                            sui.set_active_tab(0); // Onglet Conteneurs & Items
+                            if let Some(cont) = cfg.containers.get(cont_idx) {
+                                sui.set_selected_line_idx(cont.row as i32);
+                            }
+                            sui.set_selected_item_index(item_idx as i32);
+                            refresh_settings_ui(&sui, &cfg, cont_idx);
+                            let _ = sui.show();
+                            bring_fn();
+                        }
+                    }
+                    win32_utils::win32::IDM_ITEM_DELETE => {
+                        // Fermer le menu déroulant du bandeau
+                        if let Some(bui) = bar_weak.upgrade() {
+                            bui.set_active_dropdown_idx(-1);
+                            bui.invoke_dropdown_state_changed(false);
+                        }
+
+                        // Boîte de dialogue de confirmation de suppression
+                        let confirmed = unsafe {
+                            use windows_sys::Win32::UI::WindowsAndMessaging::*;
+                            let title = win32_utils::win32::to_wide_null("Confirmation de suppression");
+                            let msg = win32_utils::win32::to_wide_null(&format!(
+                                "Voulez-vous vraiment supprimer le raccourci « {} » ?",
+                                itm_name
+                            ));
+                            MessageBoxW(
+                                hwnd,
+                                msg.as_ptr(),
+                                title.as_ptr(),
+                                MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST,
+                            ) == IDYES
+                        };
+
+                        if confirmed {
+                            let mut cfg = cfg_arc.lock().unwrap();
+                            if let Some(cont) = cfg.containers.get_mut(cont_idx) {
+                                if item_idx < cont.items.len() {
+                                    cont.items.remove(item_idx);
+                                    save_config(&cfg);
+                                    if let Some(bui) = bar_weak.upgrade() {
+                                        refresh_bar_ui(&bui, &cfg);
+                                    }
+                                    if let Some(sui) = settings_weak.upgrade() {
+                                        let cur_sel = sel_idx.load(Ordering::SeqCst);
+                                        refresh_settings_ui(&sui, &cfg, cur_sel);
+                                    }
                                 }
                             }
                         }
-                    };
-                    bring_to_front();
-                    slint::Timer::single_shot(std::time::Duration::from_millis(100), move || {
-                        bring_to_front();
-                    });
+                    }
+                    _ => {}
                 }
             }
         });

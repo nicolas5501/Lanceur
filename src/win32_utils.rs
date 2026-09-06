@@ -972,8 +972,8 @@ pub mod win32 {
         set_path: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16) -> i32,
     }
 
-    /// Résout la cible réelle d'un raccourci Windows (.lnk) ainsi que ses arguments
-    pub fn resolve_lnk_target(lnk_path: &str) -> Option<(PathBuf, String)> {
+    /// Résout la cible réelle d'un raccourci Windows (.lnk), ses arguments et son dossier de travail
+    pub fn resolve_lnk_target_full(lnk_path: &str) -> Option<(PathBuf, String, PathBuf)> {
         let clean_path = lnk_path.trim().trim_matches('"');
         if !clean_path.to_lowercase().ends_with(".lnk") || !Path::new(clean_path).exists() {
             return None;
@@ -1015,6 +1015,7 @@ pub mod win32 {
 
                     let mut path_buf = [0u16; 1024];
                     let mut args_buf = [0u16; 1024];
+                    let mut dir_buf = [0u16; 1024];
 
                     let hr_path = (link_vtbl.get_path)(
                         p_shell_link,
@@ -1028,6 +1029,11 @@ pub mod win32 {
                         args_buf.as_mut_ptr(),
                         args_buf.len() as i32,
                     );
+                    let _ = (link_vtbl.get_working_directory)(
+                        p_shell_link,
+                        dir_buf.as_mut_ptr(),
+                        dir_buf.len() as i32,
+                    );
 
                     if hr_path >= 0 {
                         let len = path_buf.iter().position(|&c| c == 0).unwrap_or(path_buf.len());
@@ -1035,7 +1041,9 @@ pub mod win32 {
                         if !target_str.is_empty() {
                             let arg_len = args_buf.iter().position(|&c| c == 0).unwrap_or(args_buf.len());
                             let args_str = String::from_utf16_lossy(&args_buf[..arg_len]);
-                            result = Some((PathBuf::from(target_str), args_str));
+                            let dir_len = dir_buf.iter().position(|&c| c == 0).unwrap_or(dir_buf.len());
+                            let dir_str = String::from_utf16_lossy(&dir_buf[..dir_len]);
+                            result = Some((PathBuf::from(target_str), args_str, PathBuf::from(dir_str)));
                         }
                     }
                 }
@@ -1045,6 +1053,11 @@ pub mod win32 {
             (link_vtbl.unknown.release)(p_shell_link);
             result
         }
+    }
+
+    /// Résout la cible réelle d'un raccourci Windows (.lnk) ainsi que ses arguments
+    pub fn resolve_lnk_target(lnk_path: &str) -> Option<(PathBuf, String)> {
+        resolve_lnk_target_full(lnk_path).map(|(t, a, _)| (t, a))
     }
 
     /// Recherche et résolution du chemin réel d'un exécutable (.exe, .lnk, commande PATH, dossier Windows)
@@ -1551,24 +1564,161 @@ pub mod win32 {
         }
     }
 
-    /// Ouvre un fichier, dossier, application ou URL avec le programme par défaut de Windows (remplace la dépendance open)
-    pub fn open_path_or_url(target: &str) -> bool {
+    pub const IDM_ITEM_EDIT: usize = 1;
+    pub const IDM_ITEM_DELETE: usize = 2;
+
+    /// Découpe une chaîne en (exécutable, arguments) si elle contient des guillemets ou des espaces
+    fn split_target_and_args(s: &str) -> Option<(String, String)> {
+        let trimmed = s.trim();
+        if trimmed.starts_with('"') {
+            if let Some(end_quote) = trimmed[1..].find('"') {
+                let exe = &trimmed[1..=end_quote];
+                let args = trimmed[end_quote + 2..].trim();
+                return Some((exe.to_string(), args.to_string()));
+            }
+        } else if let Some(space_idx) = trimmed.find(' ') {
+            let exe = &trimmed[..space_idx];
+            let args = trimmed[space_idx + 1..].trim();
+            if Path::new(exe).exists() {
+                return Some((exe.to_string(), args.to_string()));
+            }
+        }
+        None
+    }
+
+    /// Détermine le dossier de travail approprié pour une cible (exécutable, raccourci, dossier)
+    pub fn get_target_working_directory(target: &str) -> Option<PathBuf> {
+        let clean = target.trim().trim_matches('"');
+        if clean.is_empty() {
+            return None;
+        }
+
+        // Si c'est une URL ou protocole, aucun répertoire de travail local
+        if clean.starts_with("http://") || clean.starts_with("https://") || clean.starts_with("mailto:") {
+            return None;
+        }
+
+        // Si c'est un raccourci .lnk, tenter d'extraire son dossier de travail ou le parent de sa cible
+        if clean.to_lowercase().ends_with(".lnk") {
+            if let Some((target_path, _args, work_dir)) = resolve_lnk_target_full(clean) {
+                if !work_dir.as_os_str().is_empty() && work_dir.exists() && work_dir.is_dir() {
+                    return Some(work_dir);
+                }
+                if let Some(parent) = target_path.parent() {
+                    if parent.exists() && parent.is_dir() {
+                        return Some(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+
+        // Si le chemin direct existe sur disque
+        let p = Path::new(clean);
+        if p.exists() {
+            if p.is_dir() {
+                return Some(p.to_path_buf());
+            }
+            if let Some(parent) = p.parent() {
+                if parent.exists() && parent.is_dir() {
+                    return Some(parent.to_path_buf());
+                }
+            }
+        }
+
+        // Cas où target contient des guillemets ou des arguments (ex: "C:\app.exe" -arg)
+        if let Some((exe_part, _)) = split_target_and_args(clean) {
+            let p_exe = Path::new(&exe_part);
+            if p_exe.exists() {
+                if let Some(parent) = p_exe.parent() {
+                    if parent.exists() && parent.is_dir() {
+                        return Some(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Ouvre un fichier, dossier, application ou URL avec le programme par défaut de Windows,
+    /// en transmettant son répertoire de travail (Working Directory) réel et ses arguments éventuels
+    pub fn open_target(target: &str, args: &str) -> bool {
         let clean = target.trim().trim_matches('"');
         if clean.is_empty() {
             return false;
         }
+
         let target_wide = to_wide_null(clean);
         let operation = to_wide_null("open");
+
+        let args_clean = args.trim();
+        let args_wide = if !args_clean.is_empty() {
+            Some(to_wide_null(args_clean))
+        } else {
+            None
+        };
+
+        let working_dir = get_target_working_directory(clean);
+        let dir_wide = working_dir.as_ref().map(|d| to_wide_null(&d.to_string_lossy()));
+
         unsafe {
             let res = windows_sys::Win32::UI::Shell::ShellExecuteW(
                 std::ptr::null_mut(),
                 operation.as_ptr(),
                 target_wide.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
+                if let Some(ref a) = args_wide { a.as_ptr() } else { std::ptr::null() },
+                if let Some(ref d) = dir_wide { d.as_ptr() } else { std::ptr::null() },
                 windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL as i32,
             );
             (res as isize) > 32
+        }
+    }
+
+    /// Ouvre un fichier, dossier, application ou URL avec le programme par défaut de Windows
+    pub fn open_path_or_url(target: &str) -> bool {
+        open_target(target, "")
+    }
+
+    /// Affiche le menu contextuel natif d'un item du bandeau (Modifier / Supprimer)
+    pub fn show_item_context_menu(hwnd: windows_sys::Win32::Foundation::HWND, item_name: &str) -> usize {
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+        use windows_sys::Win32::Foundation::POINT;
+        unsafe {
+            let menu = CreatePopupMenu();
+            if menu.is_null() {
+                return 0;
+            }
+
+            let edit_text = to_wide_null("✏️ Modifier");
+            let delete_text = to_wide_null("🗑️ Supprimer");
+
+            AppendMenuW(menu, MF_STRING, IDM_ITEM_EDIT, edit_text.as_ptr());
+            AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+            AppendMenuW(menu, MF_STRING, IDM_ITEM_DELETE, delete_text.as_ptr());
+
+            let mut pt = POINT { x: 0, y: 0 };
+            GetCursorPos(&mut pt);
+
+            let prev_foreground = GetForegroundWindow();
+            SetForegroundWindow(hwnd);
+
+            let cmd_selected = TrackPopupMenuEx(
+                menu,
+                TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                pt.x,
+                pt.y,
+                hwnd,
+                std::ptr::null(),
+            ) as usize;
+
+            PostMessageW(hwnd, WM_NULL, 0, 0);
+            DestroyMenu(menu);
+
+            if !prev_foreground.is_null() && prev_foreground != hwnd {
+                SetForegroundWindow(prev_foreground);
+            }
+
+            cmd_selected
         }
     }
 
@@ -1607,7 +1757,13 @@ pub mod win32 {
     pub fn setup_settings_window_styles(_hwnd: *mut std::ffi::c_void) {}
     pub fn set_drop_callback<F>(_cb: F) where F: Fn(Vec<String>, i32, i32, bool) + Send + Sync + 'static {}
     pub fn pick_file_dialog(_title: Option<&str>, _filter_desc: Option<&str>, _filter_exts: Option<&[&str]>) -> Option<PathBuf> { None }
+    pub const IDM_ITEM_EDIT: usize = 1;
+    pub const IDM_ITEM_DELETE: usize = 2;
+    pub fn open_target(_target: &str, _args: &str) -> bool { true }
     pub fn open_path_or_url(_target: &str) -> bool { true }
+    pub fn show_item_context_menu(_hwnd: *mut std::ffi::c_void, _item_name: &str) -> usize { 0 }
     pub fn trim_process_memory() {}
     pub fn resolve_lnk_target(_lnk: &str) -> Option<(PathBuf, String)> { None }
+    pub fn resolve_lnk_target_full(_lnk: &str) -> Option<(PathBuf, String, PathBuf)> { None }
+    pub fn get_target_working_directory(_target: &str) -> Option<PathBuf> { None }
 }

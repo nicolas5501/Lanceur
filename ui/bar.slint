@@ -54,6 +54,7 @@ export component DropdownItemRow inherits Rectangle {
     in property <string> hover_style: "Highlight";
     in property <bool> wave_cycle: false;
     callback clicked;
+    callback right_clicked;
 
     property <color> eff_color: root.custom_bg.alpha > 0 ? root.custom_bg : root.hover_color;
 
@@ -182,6 +183,11 @@ export component DropdownItemRow inherits Rectangle {
 
     itm_touch := TouchArea {
         mouse-cursor: pointer;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                root.right_clicked();
+            }
+        }
         clicked => { root.clicked(); }
     }
 }
@@ -212,6 +218,7 @@ export component BarWindow inherits Window {
     in-out property <length> active_dropdown_w: 120px;
 
     callback launch_item(string);
+    callback item_right_clicked(string);
     callback open_settings();
     callback open_context_menu();
     callback dropdown_state_changed(bool);
@@ -517,7 +524,10 @@ export component BarWindow inherits Window {
                                     clicked => {
                                         root.active_dropdown_idx = -1;
                                         root.dropdown_state_changed(false);
-                                        root.launch_item(itm.target);
+                                        root.launch_item(itm.id);
+                                    }
+                                    right_clicked => {
+                                        root.item_right_clicked(itm.id);
                                     }
                                 }
                             }
