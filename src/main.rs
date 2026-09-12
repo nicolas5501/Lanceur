@@ -17,6 +17,14 @@ fn trim_process_memory() {
     win32_utils::win32::trim_process_memory();
 }
 
+fn log_trace(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("trace_crash.log") {
+        let _ = writeln!(f, "[{}] {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(), msg);
+        let _ = f.flush();
+    }
+}
+
 fn parse_hex_color(hex_str: &str, default: Color) -> Color {
     let s = hex_str.trim().trim_start_matches('#');
     if s.len() == 3 {
@@ -1639,16 +1647,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         bar_window.on_item_right_clicked(move |item_id_slint| {
             let item_id = item_id_slint.to_string();
+            log_trace(&format!("on_item_right_clicked: item_id={}", item_id));
             let b_weak = bar_weak.clone();
             let s_weak = settings_weak.clone();
             let c_arc = cfg_arc.clone();
             let s_idx = sel_idx.clone();
             let b_fn = bring_fn.clone();
 
-            // Différer l'exécution sur le tick suivant de l'event loop Slint :
-            // Permet à Slint de terminer proprement le traitement interne du pointer-event
-            // de TouchArea avant d'exécuter une boucle modale ou de modifier les modèles UI.
             slint::Timer::single_shot(std::time::Duration::from_millis(20), move || {
+                log_trace("Timer fired");
                 let item_info = {
                     let cfg = c_arc.lock().unwrap();
                     let mut found = None;
@@ -1666,22 +1673,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let (cont_idx, item_idx, itm_name) = match item_info {
                     Some(val) => val,
-                    None => return,
+                    None => {
+                        log_trace("Item not found");
+                        return;
+                    }
                 };
+                log_trace(&format!("Item found: {}", itm_name));
 
                 #[cfg(windows)]
                 {
                     use windows_sys::Win32::Foundation::HWND;
                     let hwnd = win32_utils::win32::find_bar_hwnd();
+                    log_trace(&format!("Calling show_item_context_menu, hwnd={:?}", hwnd));
                     let action = win32_utils::win32::show_item_context_menu(hwnd, &itm_name);
+                    log_trace(&format!("show_item_context_menu returned: {}", action));
                     match action {
                         win32_utils::win32::IDM_ITEM_EDIT => {
-                            // Fermer le menu déroulant du bandeau
+                            log_trace("Action: EDIT");
                             if let Some(bui) = b_weak.upgrade() {
                                 bui.set_active_dropdown_idx(-1);
                                 bui.invoke_dropdown_state_changed(false);
                             }
-                            // Sélectionner le conteneur dans l'état partagé
                             s_idx.store(cont_idx, Ordering::SeqCst);
                             if let Some(sui) = s_weak.upgrade() {
                                 let cfg = c_arc.lock().unwrap();
@@ -1696,54 +1708,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         win32_utils::win32::IDM_ITEM_DELETE => {
+                            log_trace("Action: DELETE");
                             // 1. Fermer le menu déroulant du bandeau
                             if let Some(bui) = b_weak.upgrade() {
                                 bui.set_active_dropdown_idx(-1);
                                 bui.invoke_dropdown_state_changed(false);
                             }
+                            log_trace("Dropdown closed");
 
-                            // 2. Boîte de dialogue de confirmation de suppression avec parent NULL (indépendant)
-                            // Utiliser std::ptr::null_mut() évite tout conflit avec le HWND du bandeau
-                            // (qui possède WS_EX_NOACTIVATE et le parent de bureau Progman).
-                            let confirmed = unsafe {
-                                use windows_sys::Win32::UI::WindowsAndMessaging::*;
-                                let title = win32_utils::win32::to_wide_null("Confirmation de suppression");
-                                let msg = win32_utils::win32::to_wide_null(&format!(
-                                    "Voulez-vous vraiment supprimer le raccourci « {} » ?",
-                                    itm_name
-                                ));
-                                MessageBoxW(
-                                    std::ptr::null_mut(),
-                                    msg.as_ptr(),
-                                    title.as_ptr(),
-                                    MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND,
-                                ) == IDYES
-                            };
-
-                            // 3. Suppression atomique par identifiant d'item
-                            if confirmed {
-                                let mut cfg = c_arc.lock().unwrap();
-                                let mut removed = false;
-                                for cont in &mut cfg.containers {
-                                    if let Some(pos) = cont.items.iter().position(|it| it.id == item_id) {
-                                        cont.items.remove(pos);
-                                        removed = true;
-                                        break;
-                                    }
-                                }
-                                if removed {
-                                    save_config(&cfg);
-                                    if let Some(bui) = b_weak.upgrade() {
-                                        refresh_bar_ui(&bui, &cfg);
-                                    }
-                                    if let Some(sui) = s_weak.upgrade() {
-                                        let cur_sel = s_idx.load(Ordering::SeqCst);
-                                        refresh_settings_ui(&sui, &cfg, cur_sel);
-                                    }
+                            // 2. Suppression directe sans MessageBox modale
+                            let mut cfg = c_arc.lock().unwrap();
+                            let mut removed = false;
+                            for cont in &mut cfg.containers {
+                                if let Some(pos) = cont.items.iter().position(|it| it.id == item_id) {
+                                    cont.items.remove(pos);
+                                    removed = true;
+                                    break;
                                 }
                             }
+                            log_trace(&format!("Removed from config: {}", removed));
+                            if removed {
+                                save_config(&cfg);
+                                log_trace("Config saved");
+                                let b_clone = b_weak.clone();
+                                let s_clone = s_weak.clone();
+                                let s_idx_clone = s_idx.clone();
+                                let cfg_clone = cfg.clone();
+
+                                // Rafraîchir les UI sur le tick suivant une fois le popover fermé
+                                slint::Timer::single_shot(std::time::Duration::from_millis(15), move || {
+                                    if let Some(bui) = b_clone.upgrade() {
+                                        log_trace("Refreshing bar_ui");
+                                        refresh_bar_ui(&bui, &cfg_clone);
+                                        log_trace("Bar_ui refreshed");
+                                    }
+                                    if let Some(sui) = s_clone.upgrade() {
+                                        let cur_sel = s_idx_clone.load(Ordering::SeqCst);
+                                        log_trace("Refreshing settings_ui");
+                                        refresh_settings_ui(&sui, &cfg_clone, cur_sel);
+                                        log_trace("Settings_ui refreshed");
+                                    }
+                                });
+                            }
+                            log_trace("DELETE finished");
                         }
-                        _ => {}
+                        _ => {
+                            log_trace("Action: Cancelled or other");
+                        }
                     }
                 }
             });

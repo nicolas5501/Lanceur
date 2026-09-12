@@ -1718,10 +1718,6 @@ pub mod win32 {
             }
             DestroyMenu(menu);
 
-            if !prev_foreground.is_null() && prev_foreground != hwnd {
-                SetForegroundWindow(prev_foreground);
-            }
-
             cmd_selected
         }
     }
