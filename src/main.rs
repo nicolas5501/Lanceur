@@ -920,6 +920,23 @@ fn register_all_hotkeys_for_app(hwnd: windows_sys::Win32::Foundation::HWND, cfg:
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("Erreur fatale (Panic) :\n{}", info);
+        let _ = std::fs::write("crash.log", &msg);
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::*;
+            let title = win32_utils::win32::to_wide_null("Lanceur - Erreur Fatale");
+            let text = win32_utils::win32::to_wide_null(&msg);
+            MessageBoxW(
+                std::ptr::null_mut(),
+                text.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONERROR | MB_TOPMOST,
+            );
+        }
+    }));
+
     let app_config = Arc::new(Mutex::new(load_config()));
     let selected_container_idx = Arc::new(AtomicUsize::new(0));
     // Démarrage initial visible
@@ -1622,93 +1639,114 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         bar_window.on_item_right_clicked(move |item_id_slint| {
             let item_id = item_id_slint.to_string();
-            let (cont_idx, item_idx, itm_name) = {
-                let cfg = cfg_arc.lock().unwrap();
-                let mut found = None;
-                for (c_i, cont) in cfg.containers.iter().enumerate() {
-                    for (i_i, itm) in cont.items.iter().enumerate() {
-                        if itm.id == item_id {
-                            found = Some((c_i, i_i, itm.name.clone()));
-                            break;
+            let b_weak = bar_weak.clone();
+            let s_weak = settings_weak.clone();
+            let c_arc = cfg_arc.clone();
+            let s_idx = sel_idx.clone();
+            let b_fn = bring_fn.clone();
+
+            // Différer l'exécution sur le tick suivant de l'event loop Slint :
+            // Permet à Slint de terminer proprement le traitement interne du pointer-event
+            // de TouchArea avant d'exécuter une boucle modale ou de modifier les modèles UI.
+            slint::Timer::single_shot(std::time::Duration::from_millis(20), move || {
+                let item_info = {
+                    let cfg = c_arc.lock().unwrap();
+                    let mut found = None;
+                    for (c_i, cont) in cfg.containers.iter().enumerate() {
+                        for (i_i, itm) in cont.items.iter().enumerate() {
+                            if itm.id == item_id {
+                                found = Some((c_i, i_i, itm.name.clone()));
+                                break;
+                            }
                         }
+                        if found.is_some() { break; }
                     }
-                    if found.is_some() { break; }
-                }
-                match found {
+                    found
+                };
+
+                let (cont_idx, item_idx, itm_name) = match item_info {
                     Some(val) => val,
                     None => return,
-                }
-            };
+                };
 
-            #[cfg(windows)]
-            {
-                use windows_sys::Win32::Foundation::HWND;
-                let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
-                let action = win32_utils::win32::show_item_context_menu(hwnd, &itm_name);
-                match action {
-                    win32_utils::win32::IDM_ITEM_EDIT => {
-                        // Fermer le menu déroulant du bandeau
-                        if let Some(bui) = bar_weak.upgrade() {
-                            bui.set_active_dropdown_idx(-1);
-                            bui.invoke_dropdown_state_changed(false);
-                        }
-                        // Sélectionner le conteneur dans l'état partagé
-                        sel_idx.store(cont_idx, Ordering::SeqCst);
-                        if let Some(sui) = settings_weak.upgrade() {
-                            let cfg = cfg_arc.lock().unwrap();
-                            sui.set_active_tab(0); // Onglet Conteneurs & Items
-                            if let Some(cont) = cfg.containers.get(cont_idx) {
-                                sui.set_selected_line_idx(cont.row as i32);
+                #[cfg(windows)]
+                {
+                    use windows_sys::Win32::Foundation::HWND;
+                    let hwnd = win32_utils::win32::find_bar_hwnd();
+                    let action = win32_utils::win32::show_item_context_menu(hwnd, &itm_name);
+                    match action {
+                        win32_utils::win32::IDM_ITEM_EDIT => {
+                            // Fermer le menu déroulant du bandeau
+                            if let Some(bui) = b_weak.upgrade() {
+                                bui.set_active_dropdown_idx(-1);
+                                bui.invoke_dropdown_state_changed(false);
                             }
-                            sui.set_selected_item_index(item_idx as i32);
-                            refresh_settings_ui(&sui, &cfg, cont_idx);
-                            let _ = sui.show();
-                            bring_fn();
+                            // Sélectionner le conteneur dans l'état partagé
+                            s_idx.store(cont_idx, Ordering::SeqCst);
+                            if let Some(sui) = s_weak.upgrade() {
+                                let cfg = c_arc.lock().unwrap();
+                                sui.set_active_tab(0); // Onglet Conteneurs & Items
+                                if let Some(cont) = cfg.containers.get(cont_idx) {
+                                    sui.set_selected_line_idx(cont.row as i32);
+                                }
+                                sui.set_selected_item_index(item_idx as i32);
+                                refresh_settings_ui(&sui, &cfg, cont_idx);
+                                let _ = sui.show();
+                                b_fn();
+                            }
                         }
-                    }
-                    win32_utils::win32::IDM_ITEM_DELETE => {
-                        // Fermer le menu déroulant du bandeau
-                        if let Some(bui) = bar_weak.upgrade() {
-                            bui.set_active_dropdown_idx(-1);
-                            bui.invoke_dropdown_state_changed(false);
-                        }
+                        win32_utils::win32::IDM_ITEM_DELETE => {
+                            // 1. Fermer le menu déroulant du bandeau
+                            if let Some(bui) = b_weak.upgrade() {
+                                bui.set_active_dropdown_idx(-1);
+                                bui.invoke_dropdown_state_changed(false);
+                            }
 
-                        // Boîte de dialogue de confirmation de suppression
-                        let confirmed = unsafe {
-                            use windows_sys::Win32::UI::WindowsAndMessaging::*;
-                            let title = win32_utils::win32::to_wide_null("Confirmation de suppression");
-                            let msg = win32_utils::win32::to_wide_null(&format!(
-                                "Voulez-vous vraiment supprimer le raccourci « {} » ?",
-                                itm_name
-                            ));
-                            MessageBoxW(
-                                hwnd,
-                                msg.as_ptr(),
-                                title.as_ptr(),
-                                MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST,
-                            ) == IDYES
-                        };
+                            // 2. Boîte de dialogue de confirmation de suppression avec parent NULL (indépendant)
+                            // Utiliser std::ptr::null_mut() évite tout conflit avec le HWND du bandeau
+                            // (qui possède WS_EX_NOACTIVATE et le parent de bureau Progman).
+                            let confirmed = unsafe {
+                                use windows_sys::Win32::UI::WindowsAndMessaging::*;
+                                let title = win32_utils::win32::to_wide_null("Confirmation de suppression");
+                                let msg = win32_utils::win32::to_wide_null(&format!(
+                                    "Voulez-vous vraiment supprimer le raccourci « {} » ?",
+                                    itm_name
+                                ));
+                                MessageBoxW(
+                                    std::ptr::null_mut(),
+                                    msg.as_ptr(),
+                                    title.as_ptr(),
+                                    MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND,
+                                ) == IDYES
+                            };
 
-                        if confirmed {
-                            let mut cfg = cfg_arc.lock().unwrap();
-                            if let Some(cont) = cfg.containers.get_mut(cont_idx) {
-                                if item_idx < cont.items.len() {
-                                    cont.items.remove(item_idx);
+                            // 3. Suppression atomique par identifiant d'item
+                            if confirmed {
+                                let mut cfg = c_arc.lock().unwrap();
+                                let mut removed = false;
+                                for cont in &mut cfg.containers {
+                                    if let Some(pos) = cont.items.iter().position(|it| it.id == item_id) {
+                                        cont.items.remove(pos);
+                                        removed = true;
+                                        break;
+                                    }
+                                }
+                                if removed {
                                     save_config(&cfg);
-                                    if let Some(bui) = bar_weak.upgrade() {
+                                    if let Some(bui) = b_weak.upgrade() {
                                         refresh_bar_ui(&bui, &cfg);
                                     }
-                                    if let Some(sui) = settings_weak.upgrade() {
-                                        let cur_sel = sel_idx.load(Ordering::SeqCst);
+                                    if let Some(sui) = s_weak.upgrade() {
+                                        let cur_sel = s_idx.load(Ordering::SeqCst);
                                         refresh_settings_ui(&sui, &cfg, cur_sel);
                                     }
                                 }
                             }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
-            }
+            });
         });
     }
 

@@ -1700,7 +1700,9 @@ pub mod win32 {
             GetCursorPos(&mut pt);
 
             let prev_foreground = GetForegroundWindow();
-            SetForegroundWindow(hwnd);
+            if !hwnd.is_null() {
+                SetForegroundWindow(hwnd);
+            }
 
             let cmd_selected = TrackPopupMenuEx(
                 menu,
@@ -1711,7 +1713,9 @@ pub mod win32 {
                 std::ptr::null(),
             ) as usize;
 
-            PostMessageW(hwnd, WM_NULL, 0, 0);
+            if !hwnd.is_null() {
+                PostMessageW(hwnd, WM_NULL, 0, 0);
+            }
             DestroyMenu(menu);
 
             if !prev_foreground.is_null() && prev_foreground != hwnd {
