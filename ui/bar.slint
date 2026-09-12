@@ -11,15 +11,25 @@ export struct BarItemData {
     text_color: color,
 }
 
+export struct BarColumnData {
+    col_idx: int,
+    items: [BarItemData],
+}
+
 export struct BarContainerData {
     flat_idx: int,
     id: string,
     name: string,
     icon: string,
+    icon_type: string, // "emoji" ou "extracted"
+    icon_image: image,
     width_val: length, // 0 = auto
     display_mode: string, // "Both", "IconOnly", "NameOnly"
     bg_color: color,
     text_color: color,
+    columns_count: int,
+    max_items_in_col: int,
+    columns: [BarColumnData],
     items: [BarItemData],
     hotkey_display: string,
 }
@@ -29,54 +39,132 @@ export struct BarRowData {
     containers: [BarContainerData],
 }
 
-component DropdownItemRow inherits Rectangle {
+export component DropdownItemRow inherits Rectangle {
     in property <string> item_name: "";
     in property <string> icon_type: "emoji";
     in property <string> icon_emoji: "🚀";
     in property <image> icon_image;
     in property <string> hotkey_display: "";
     in property <length> item_h: 26px;
+    in property <length> icon_sz: 18px;
     in property <length> font_sz: 11px;
     in property <color> custom_bg: #00000000;
     in property <color> custom_text: #ffffff;
+    in property <color> hover_color: #2563eb;
+    in property <string> hover_style: "Highlight";
+    in property <bool> wave_cycle: false;
     callback clicked;
+    callback right_clicked;
 
-    height: root.item_h;
-    background: itm_touch.has-hover ? (root.custom_bg.alpha > 0 ? root.custom_bg : #2563eb) : #00000000;
-    border-radius: 4px;
-    animate background { duration: 60ms; }
+    property <color> eff_color: root.custom_bg.alpha > 0 ? root.custom_bg : root.hover_color;
 
-    HorizontalLayout {
-        padding-left: 8px;
+    height: max(root.item_h, root.icon_sz + 6px);
+    clip: true;
+
+    // Fond et bordures dynamiques selon le style de survol sélectionné
+    background: !itm_touch.has-hover ? #00000000 : (
+        root.hover_style == "WaveBorder" ? eff_color.transparentize(0.85) :
+        root.hover_style == "Blinking" ? (root.wave_cycle ? eff_color : eff_color.transparentize(0.70)) :
+        root.hover_style == "Glow" ? eff_color.transparentize(0.75) :
+        root.hover_style == "SlideAccent" ? eff_color.transparentize(0.85) :
+        root.hover_style == "ScalePop" ? eff_color.transparentize(0.40) :
+        root.hover_style == "GlassShimmer" ? eff_color.transparentize(0.55).brighter(0.2) :
+        root.hover_style == "UnderlineWave" ? eff_color.transparentize(0.90) :
+        eff_color
+    );
+
+    border-radius: (root.hover_style == "WaveBorder") ? 2px : 4px;
+    border-width: !itm_touch.has-hover ? 0px : (
+        root.hover_style == "WaveBorder" ? (root.wave_cycle ? 2px : 1px) :
+        root.hover_style == "Glow" ? 1.5px :
+        root.hover_style == "GlassShimmer" ? 1px : 0px
+    );
+    border-color: !itm_touch.has-hover ? #00000000 : (
+        root.hover_style == "WaveBorder" ? (root.wave_cycle ? eff_color.brighter(0.4) : eff_color) :
+        root.hover_style == "Glow" ? eff_color.brighter(0.5) :
+        root.hover_style == "GlassShimmer" ? #ffffff55 : #00000000
+    );
+
+    drop-shadow-blur: !itm_touch.has-hover ? 0px : (
+        root.hover_style == "Glow" ? 12px :
+        root.hover_style == "WaveBorder" ? (root.wave_cycle ? 8px : 3px) :
+        root.hover_style == "ScalePop" ? 6px : 0px
+    );
+    drop-shadow-color: root.hover_style == "ScalePop" ? #00000066 : eff_color;
+
+    animate background { duration: (root.hover_style == "Blinking" ? 220ms : 80ms); }
+    animate border-width { duration: 100ms; }
+    animate border-color { duration: 100ms; }
+
+    // Barre d'accentuation latérale (SlideAccent)
+    if root.hover_style == "SlideAccent" : Rectangle {
+        x: 0px;
+        y: 2px;
+        width: itm_touch.has-hover ? 4px : 0px;
+        height: parent.height - 4px;
+        background: eff_color.brighter(0.3);
+        border-radius: 2px;
+        animate width { duration: 120ms; easing: ease-out; }
+    }
+
+    // Barre de soulignement ondulant (UnderlineWave)
+    if root.hover_style == "UnderlineWave" : Rectangle {
+        x: itm_touch.has-hover ? (root.wave_cycle ? 4px : 12px) : 24px;
+        y: parent.height - 2px;
+        width: itm_touch.has-hover ? (root.wave_cycle ? parent.width - 8px : parent.width - 24px) : 0px;
+        height: 2px;
+        background: eff_color.brighter(0.3);
+        border-radius: 1px;
+        animate width { duration: 180ms; easing: ease-out; }
+        animate x { duration: 180ms; easing: ease-out; }
+    }
+
+    content_holder := HorizontalLayout {
+        x: (itm_touch.has-hover && root.hover_style == "ScalePop") ? 5px : 0px;
+        padding-left: (root.hover_style == "SlideAccent" && itm_touch.has-hover) ? 12px : 8px;
         padding-right: 8px;
         spacing: 6px;
-        alignment: center;
+        alignment: start;
+        animate x { duration: 100ms; easing: ease-out; }
+        animate padding-left { duration: 120ms; easing: ease-out; }
 
-        if root.icon_type == "extracted" : Image {
-            source: root.icon_image;
-            width: root.item_h * 0.7;
-            height: root.item_h * 0.7;
-            image-fit: contain;
-            vertical-alignment: center;
-        }
+        Rectangle {
+            width: max(22px, root.icon_sz + 4px);
+            height: max(22px, root.icon_sz + 4px);
+            clip: true;
 
-        if root.icon_type != "extracted" : Text {
-            text: root.icon_emoji;
-            font-size: root.font_sz + 2px;
-            vertical-alignment: center;
+            if root.icon_type == "extracted" : Image {
+                source: root.icon_image;
+                width: root.icon_sz;
+                height: root.icon_sz;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                image-fit: contain;
+            }
+
+            if root.icon_type != "extracted" : Text {
+                width: 100%;
+                height: 100%;
+                text: root.icon_emoji;
+                font-size: root.icon_sz;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
         }
 
         Text {
             text: root.item_name;
-            color: root.custom_text.alpha > 0 ? root.custom_text : #ffffff;
+            color: root.custom_text.alpha > 0 ? root.custom_text : (
+                (itm_touch.has-hover && root.hover_style == "Glow") ? eff_color.brighter(0.7) : #ffffff
+            );
             font-size: root.font_sz;
-            font-weight: 600;
+            font-weight: (itm_touch.has-hover && (root.hover_style == "Glow" || root.hover_style == "ScalePop")) ? 700 : 600;
             vertical-alignment: center;
             horizontal-stretch: 1;
         }
 
         if root.hotkey_display != "" : Rectangle {
-            background: itm_touch.has-hover ? #1d4ed8 : #334155;
+            background: itm_touch.has-hover ? eff_color.darker(0.2) : #334155;
             border-radius: 3px;
             height: 15px;
             HorizontalLayout {
@@ -85,7 +173,7 @@ component DropdownItemRow inherits Rectangle {
                 Text {
                     text: root.hotkey_display;
                     font-size: 9px;
-                    color: #93c5fd;
+                    color: itm_touch.has-hover ? #ffffff : #93c5fd;
                     font-weight: 700;
                     vertical-alignment: center;
                 }
@@ -95,6 +183,11 @@ component DropdownItemRow inherits Rectangle {
 
     itm_touch := TouchArea {
         mouse-cursor: pointer;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                root.right_clicked();
+            }
+        }
         clicked => { root.clicked(); }
     }
 }
@@ -109,39 +202,71 @@ export component BarWindow inherits Window {
     in property <string> containers_align: "Left"; // "Left", "Center", "Right"
     in property <color> bar_bg_color: #0f172a;
     in property <color> bar_text_color: #f8fafc;
+    in property <color> dropdown_hover_color: #2563eb;
+    in property <string> dropdown_hover_style: "Highlight";
+    in-out property <bool> anim_pulse: false;
     in property <length> bar_h: 36px;
     in property <length> item_h: 26px;
+    in property <length> icon_sz: 18px;
     in property <length> container_font_sz: 11px;
     in property <length> item_font_sz: 11px;
     in property <[BarRowData]> rows_list: [];
     in property <int> rows_count: 1;
     in-out property <int> active_dropdown_idx: -1;
+    in-out property <length> active_dropdown_x: 0px;
+    in-out property <length> active_dropdown_y: 0px;
+    in-out property <length> active_dropdown_w: 120px;
 
     callback launch_item(string);
+    callback item_right_clicked(string);
     callback open_settings();
     callback open_context_menu();
     callback dropdown_state_changed(bool);
     callback container_width_changed(int, length);
+    callback window_drag_started();
+    callback window_dragged(length, length);
+    callback window_width_changed(length);
+
+    // Zone tactile globale en arrière-plan pour fermer le menu déroulant lors du survol de l'espace transparent
+    if root.active_dropdown_idx >= 0 : dismiss_touch := TouchArea {
+        width: 100%;
+        height: 100%;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.move && root.active_dropdown_idx >= 0 {
+                root.active_dropdown_idx = -1;
+                root.dropdown_state_changed(false);
+            }
+        }
+    }
 
     VerticalLayout {
         alignment: root.bar_position == "Bottom" ? end : start;
 
         main_bar := Rectangle {
             width: 100%;
-            height: root.bar_h * max(1, root.rows_count);
+            height: max(root.bar_h, root.icon_sz + 14px) * max(1, root.rows_count);
             background: root.bar_bg_color;
-            border-bottom-left-radius: root.bar_position == "Top" ? 6px : 0px;
-            border-bottom-right-radius: root.bar_position == "Top" ? 6px : 0px;
-            border-top-left-radius: root.bar_position == "Bottom" ? 6px : 0px;
-            border-top-right-radius: root.bar_position == "Bottom" ? 6px : 0px;
+            border-bottom-left-radius: (root.bar_position == "Top" || root.bar_position == "Floating") ? 6px : 0px;
+            border-bottom-right-radius: (root.bar_position == "Top" || root.bar_position == "Floating") ? 6px : 0px;
+            border-top-left-radius: (root.bar_position == "Bottom" || root.bar_position == "Floating") ? 6px : 0px;
+            border-top-right-radius: (root.bar_position == "Bottom" || root.bar_position == "Floating") ? 6px : 0px;
             border-width: 1px;
             border-color: #334155aa;
 
-            // TouchArea d'arrière-plan du bandeau : ferme le menu au survol et gère le clic droit
+            // TouchArea d'arrière-plan du bandeau : ferme le menu au survol et gère le clic droit / drag
             bar_bg_touch := TouchArea {
                 pointer-event(event) => {
                     if event.kind == PointerEventKind.move {
-                        if root.active_dropdown_idx >= 0 {
+                        if root.bar_position == "Floating" && self.pressed {
+                            root.window_dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                        } else if !self.pressed && root.active_dropdown_idx >= 0 {
+                            root.active_dropdown_idx = -1;
+                            root.dropdown_state_changed(false);
+                        }
+                    } else if event.kind == PointerEventKind.down {
+                        if root.bar_position == "Floating" {
+                            root.window_drag_started();
+                        } else if root.active_dropdown_idx >= 0 {
                             root.active_dropdown_idx = -1;
                             root.dropdown_state_changed(false);
                         }
@@ -157,19 +282,52 @@ export component BarWindow inherits Window {
                 alignment: start;
 
                 for row_data[r_idx] in root.rows_list : row_rect := Rectangle {
-                    height: root.bar_h;
+                    height: max(root.bar_h, root.icon_sz + 14px);
                     width: 100%;
 
                     HorizontalLayout {
                         padding-left: 6px;
-                        padding-right: 6px;
+                        padding-right: root.bar_position == "Floating" ? 14px : 6px;
                         spacing: 4px;
                         alignment: root.containers_align == "Center" ? center : (root.containers_align == "Right" ? end : start);
 
-                        // Liste Horizontale des Conteneurs de cette ligne
-                        for cont[c_idx] in row_data.containers : cont_wrapper := Rectangle {
-                            width: cont.width_val > 0px ? cont.width_val : cont_layout.min-width;
+                        // Poignée de déplacement explicite en mode Flottant
+                        if root.bar_position == "Floating" : Rectangle {
+                            width: 18px;
                             height: parent.height;
+                            Text {
+                                text: "⠿";
+                                font-size: 13px;
+                                color: #64748b;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                mouse-cursor: move;
+                                pointer-event(event) => {
+                                    if event.kind == PointerEventKind.down {
+                                        root.window_drag_started();
+                                    } else if event.kind == PointerEventKind.move && self.pressed {
+                                        root.window_dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Liste Horizontale des Conteneurs de cette ligne (SANS dropdowns pour préserver le Z-Order)
+                        for cont[c_idx] in row_data.containers : cont_wrapper := Rectangle {
+                            width: cont.width_val > 0px ? max(cont.width_val, cont_layout.min-width) : cont_layout.min-width;
+                            height: parent.height;
+                            clip: false;
+
+                            property <bool> is_active: root.active_dropdown_idx == cont.flat_idx;
+                            changed is_active => {
+                                if self.is_active {
+                                    root.active_dropdown_x = cont_wrapper.x;
+                                    root.active_dropdown_y = row_rect.y;
+                                    root.active_dropdown_w = cont_wrapper.width;
+                                }
+                            }
 
                             // Bouton Conteneur pleine hauteur avec couleurs personnalisables
                             cont_pill := Rectangle {
@@ -186,15 +344,33 @@ export component BarWindow inherits Window {
                                 animate background { duration: 80ms; }
 
                                 cont_layout := HorizontalLayout {
-                                    padding-left: 10px;
-                                    padding-right: 10px;
-                                    spacing: 6px;
+                                    padding-left: max(10px, root.icon_sz * 0.25);
+                                    padding-right: max(10px, root.icon_sz * 0.25);
+                                    spacing: max(6px, root.icon_sz * 0.22);
                                     alignment: center;
 
-                                    if cont.display_mode != "NameOnly" : Text {
-                                        text: cont.icon;
-                                        font-size: root.container_font_sz + 2px;
-                                        vertical-alignment: center;
+                                    if cont.display_mode != "NameOnly" : Rectangle {
+                                        width: max(20px, root.icon_sz + 4px);
+                                        height: max(20px, root.icon_sz + 4px);
+                                        y: (parent.height - self.height) / 2;
+
+                                        if cont.icon_type == "extracted" : Image {
+                                            source: cont.icon_image;
+                                            width: root.icon_sz;
+                                            height: root.icon_sz;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            image-fit: contain;
+                                        }
+
+                                        if cont.icon_type != "extracted" : Text {
+                                            width: 100%;
+                                            height: 100%;
+                                            text: cont.icon;
+                                            font-size: root.icon_sz;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
                                     }
 
                                     if cont.display_mode != "IconOnly" : Text {
@@ -217,9 +393,12 @@ export component BarWindow inherits Window {
                                 c_touch := TouchArea {
                                     mouse-cursor: pointer;
                                     pointer-event(event) => {
-                                        if event.kind == PointerEventKind.move || self.has-hover {
+                                        if event.kind == PointerEventKind.move && self.has-hover {
                                             if root.active_dropdown_idx != cont.flat_idx {
                                                 root.active_dropdown_idx = cont.flat_idx;
+                                                root.active_dropdown_x = cont_wrapper.x;
+                                                root.active_dropdown_y = row_rect.y;
+                                                root.active_dropdown_w = cont_wrapper.width;
                                                 root.dropdown_state_changed(true);
                                             }
                                         } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
@@ -243,44 +422,112 @@ export component BarWindow inherits Window {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
 
-                            // Le Menu Déroulant rattaché DIRECTEMENT avec personnalisation des couleurs
-                            if root.active_dropdown_idx == cont.flat_idx : dropdown_popover := Rectangle {
-                                x: 0px;
-                                height: max(32px, (cont.items.length * (root.item_h + 2px)) + 8px);
-                                y: root.bar_position == "Bottom" ? -self.height : parent.height;
-                                width: max(cont_pill.width, max(190px, dropdown_layout.min-width + 16px));
-                                background: root.bar_bg_color;
-                                border-radius: 4px;
-                                border-width: 1px;
-                                border-color: #3b82f6cc;
-                                drop-shadow-blur: 10px;
-                                drop-shadow-color: #000000aa;
+            // Poignée de redimensionnement de la largeur du bandeau en mode Flottant
+            if root.bar_position == "Floating" : Rectangle {
+                x: parent.width - 8px;
+                width: 8px;
+                height: parent.height;
+                background: #00000000;
+                TouchArea {
+                    mouse-cursor: ew-resize;
+                    moved => {
+                        let new_w = max(260px, main_bar.width + (self.mouse-x - self.pressed-x));
+                        root.window_width_changed(new_w);
+                    }
+                }
+            }
+        }
+    }
 
-                                dropdown_layout := VerticalLayout {
-                                    padding: 4px;
-                                    spacing: 2px;
+    // Overlay du Menu Déroulant rattaché au niveau racine de BarWindow
+    // Permet au popover d'avoir sa propre géométrie pleine hauteur sans être tronqué par main_bar
+    if root.active_dropdown_idx >= 0 : dropdown_overlay := Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000000;
 
-                                    if cont.items.length == 0 : Rectangle {
-                                        height: 26px;
-                                        Text { text: "Aucun item."; color: #64748b; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+        for row_data in root.rows_list : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: #00000000;
+
+            for cont in row_data.containers : Rectangle {
+                width: 100%;
+                height: 100%;
+                background: #00000000;
+
+                if root.active_dropdown_idx == cont.flat_idx : dropdown_popover := Rectangle {
+                    x: max(2px, min(parent.width - self.width - 2px, root.active_dropdown_x));
+                    height: max(34px, dropdown_layout.min-height);
+                    y: root.bar_position == "Bottom" ? (parent.height - (max(root.bar_h, root.icon_sz + 14px) * max(1, root.rows_count)) - self.height + 1px) : (root.active_dropdown_y + max(root.bar_h, root.icon_sz + 14px) - 1px);
+                    width: max(root.active_dropdown_w, max(dropdown_layout.min-width + 12px, (cont.columns_count * max(175px, root.icon_sz + 145px)) + (max(0, cont.columns_count - 1) * 8px) + 12px));
+                    background: root.bar_bg_color.with-alpha(1.0);
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: #3b82f6cc;
+                    drop-shadow-blur: 10px;
+                    drop-shadow-color: #000000aa;
+
+                    // Capture le survol de toute la zone popover pour empêcher dismiss_touch d'intercepter les mouvements
+                    popover_touch := TouchArea {
+                        width: 100%;
+                        height: 100%;
+                    }
+
+                    dropdown_layout := HorizontalLayout {
+                        padding: 4px;
+                        spacing: 6px;
+
+                        if cont.columns.length == 0 || (cont.columns.length == 1 && cont.columns[0].items.length == 0) : Rectangle {
+                            height: 26px;
+                            min-width: 140px;
+                            Text { text: "Aucun item."; color: #64748b; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+
+                        for col_data[c_idx] in cont.columns : HorizontalLayout {
+                            spacing: 6px;
+
+                            if c_idx > 0 : Rectangle {
+                                width: 1px;
+                                background: #33415566;
+                            }
+
+                            VerticalLayout {
+                                alignment: start;
+                                spacing: 2px;
+                                min-width: max(170px, root.icon_sz + 140px);
+
+                                if col_data.items.length == 0 : Rectangle {
+                                    height: 26px;
+                                    Text { text: "Vide"; color: #475569; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                                }
+
+                                for itm in col_data.items : DropdownItemRow {
+                                    item_name: itm.name;
+                                    icon_type: itm.icon_type;
+                                    icon_emoji: itm.icon_emoji;
+                                    icon_image: itm.icon_image;
+                                    icon_sz: root.icon_sz;
+                                    hotkey_display: itm.hotkey_display;
+                                    item_h: root.item_h;
+                                    font_sz: root.item_font_sz;
+                                    custom_bg: itm.bg_color;
+                                    custom_text: itm.text_color;
+                                    hover_color: root.dropdown_hover_color;
+                                    hover_style: root.dropdown_hover_style;
+                                    wave_cycle: root.anim_pulse;
+                                    clicked => {
+                                        root.active_dropdown_idx = -1;
+                                        root.dropdown_state_changed(false);
+                                        root.launch_item(itm.id);
                                     }
-
-                                    for itm in cont.items : DropdownItemRow {
-                                        item_name: itm.name;
-                                        icon_type: itm.icon_type;
-                                        icon_emoji: itm.icon_emoji;
-                                        icon_image: itm.icon_image;
-                                        hotkey_display: itm.hotkey_display;
-                                        item_h: root.item_h;
-                                        font_sz: root.item_font_sz;
-                                        custom_bg: itm.bg_color;
-                                        custom_text: itm.text_color;
-                                        clicked => {
-                                            root.active_dropdown_idx = -1;
-                                            root.dropdown_state_changed(false);
-                                            root.launch_item(itm.target);
-                                        }
+                                    right_clicked => {
+                                        root.item_right_clicked(itm.id);
                                     }
                                 }
                             }

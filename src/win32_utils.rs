@@ -11,6 +11,7 @@ pub mod win32 {
     use windows_sys::Win32::Foundation::*;
     use windows_sys::Win32::Graphics::Dwm::*;
     use windows_sys::Win32::Graphics::Gdi::*;
+    use windows_sys::Win32::System::Ole::*;
     use windows_sys::Win32::System::Registry::*;
     use windows_sys::Win32::System::Threading::*;
     use windows_sys::Win32::UI::Controls::*;
@@ -24,6 +25,8 @@ pub mod win32 {
     pub static AUTOSTART_ENABLED: AtomicBool = AtomicBool::new(false);
     pub static STAY_ON_TOP_ENABLED: AtomicBool = AtomicBool::new(false);
     pub static BAR_EXPLICITLY_HIDDEN: AtomicBool = AtomicBool::new(false);
+    pub static BAR_WINDOW_VISIBLE: AtomicBool = AtomicBool::new(true);
+    pub static DESKTOP_PARENT: AtomicUsize = AtomicUsize::new(0);
 
     pub const WM_APP_TRAY: u32 = WM_APP + 1;
     pub const WM_APP_HOTKEY: u32 = WM_APP + 2;
@@ -32,6 +35,7 @@ pub mod win32 {
     pub const IDM_AUTOSTART: usize = 1003;
     pub const IDM_QUIT: usize = 1004;
     pub const MAIN_HOTKEY_ID: i32 = 9001;
+    pub const VISIBILITY_TIMER_ID: usize = 1;
 
     pub fn to_wide_null(s: &str) -> Vec<u16> {
         OsStr::new(s).encode_wide().chain(Some(0)).collect()
@@ -70,7 +74,44 @@ pub mod win32 {
         found_hwnd
     }
 
-    /// Subclass Window Procedure pour intercepter le vol de focus et résister à Win+D
+    /// Recherche fiable du HWND de la fenêtre des Paramètres
+    pub fn find_settings_hwnd() -> HWND {
+        unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let mut process_id: u32 = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, &mut process_id); }
+            if process_id == unsafe { GetCurrentProcessId() } {
+                let mut title_buf = [0u16; 256];
+                let len = unsafe { GetWindowTextW(hwnd, title_buf.as_mut_ptr(), 256) };
+                if len > 0 {
+                    let title = String::from_utf16_lossy(&title_buf[..len as usize]);
+                    if title.contains("Configuration du Lanceur") {
+                        unsafe { *(lparam as *mut HWND) = hwnd; }
+                        return 0;
+                    }
+                }
+            }
+            1
+        }
+        let mut found_hwnd: HWND = std::ptr::null_mut();
+        unsafe {
+            EnumWindows(Some(enum_proc), &mut found_hwnd as *mut _ as LPARAM);
+        }
+        found_hwnd
+    }
+
+    pub type DropCallback = Box<dyn Fn(Vec<String>, i32, i32, bool) + Send + Sync + 'static>;
+    pub static DROP_CALLBACK: std::sync::Mutex<Option<DropCallback>> = std::sync::Mutex::new(None);
+
+    pub fn set_drop_callback<F>(cb: F)
+    where
+        F: Fn(Vec<String>, i32, i32, bool) + Send + Sync + 'static,
+    {
+        if let Ok(mut lock) = DROP_CALLBACK.lock() {
+            *lock = Some(Box::new(cb));
+        }
+    }
+
+    /// Subclass Window Procedure pour intercepter le vol de focus, résister à Win+D et gérer le Drag & Drop
     unsafe extern "system" fn bar_wnd_proc_hook(
         hwnd: HWND,
         msg: u32,
@@ -81,31 +122,68 @@ pub mod win32 {
     ) -> LRESULT {
         match msg {
             WM_NCCALCSIZE => {
-                // Supprime totalement le cadre non-client (barre de titre et bordures DWM)
+                // Supprime totalement le cadre non-client
                 if wparam != 0 {
                     return 0;
                 }
             }
             WM_NCACTIVATE => {
-                // Empêche Windows de dessiner la barre de titre standard "Lanceur Bandeau"
+                // Empêche Windows de dessiner la barre de titre standard
+                return 1;
+            }
+            WM_ACTIVATE => {
+                let state = (wparam & 0xFFFF) as u32;
+                if state == WA_INACTIVE as u32 {
+                    if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
+                        unsafe {
+                            let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
+                            if !progman.is_null() {
+                                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
+                            }
+                        }
+                    }
+                }
                 return 1;
             }
             WM_ERASEBKGND => {
-                // Empêche formellement Windows de repeindre le fond en blanc par défaut
+                // Empêche Windows d'effacer le fond avec un pinceau blanc standard
                 return 1;
             }
             WM_NCPAINT => {
-                // Empêche Windows de dessiner une bordure ou barre de titre standard non-client
                 return 0;
             }
             WM_MOUSEACTIVATE => {
                 // Empêche formellement la fenêtre de voler le focus lors des clics souris ordinaires
                 return MA_NOACTIVATE as isize;
             }
+            WM_DROPFILES => {
+                let hdrop = wparam as HDROP;
+                let mut pt = POINT { x: 0, y: 0 };
+                unsafe { DragQueryPoint(hdrop, &mut pt); }
+                let count = unsafe { DragQueryFileW(hdrop, 0xffffffff, std::ptr::null_mut(), 0) };
+                let mut files = Vec::new();
+                for i in 0..count {
+                    let mut buf = [0u16; 512];
+                    let len = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), 512) };
+                    if len > 0 {
+                        files.push(String::from_utf16_lossy(&buf[..len as usize]));
+                    }
+                }
+                unsafe { DragFinish(hdrop); }
+
+                if !files.is_empty() {
+                    if let Ok(guard) = DROP_CALLBACK.lock() {
+                        if let Some(cb) = guard.as_ref() {
+                            cb(files, pt.x, pt.y, false);
+                        }
+                    }
+                }
+                return 0;
+            }
             WM_SYSCOMMAND => {
                 // Empêche Windows de minimiser le bandeau lors d'un Win+D
                 let cmd = (wparam & 0xFFF0) as u32;
-                if cmd == SC_MINIMIZE {
+                if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && cmd == SC_MINIMIZE {
                     let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
                     if !is_explicit {
                         return 0; // Bloquer la minimisation demandée par le Shell
@@ -113,40 +191,21 @@ pub mod win32 {
                 }
             }
             WM_WINDOWPOSCHANGING => {
-                // Intercepte les tentatives du Shell de masquer le bandeau lors d'un Win+D
-                let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
-                if !is_explicit && lparam != 0 {
-                    let pos_ptr = lparam as *mut WINDOWPOS;
-                    if !pos_ptr.is_null() {
-                        let pos = unsafe { &mut *pos_ptr };
-                        if (pos.flags & SWP_HIDEWINDOW) != 0 {
-                            pos.flags &= !SWP_HIDEWINDOW;
-                            pos.flags |= SWP_SHOWWINDOW;
-                        }
-                    }
-                }
-            }
-            WM_WINDOWPOSCHANGED => {
-                let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
-                if !is_explicit {
-                    unsafe {
-                        if IsIconic(hwnd) != 0 {
-                            ShowWindow(hwnd, SW_RESTORE);
-                        }
-                    }
-                }
-            }
-            WM_SIZE => {
-                let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
-                if !is_explicit && wparam == SIZE_MINIMIZED as usize {
-                    unsafe { ShowWindow(hwnd, SW_RESTORE); }
-                    return 0;
+                if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) && lparam != 0 {
+                    let pos = unsafe { &mut *(lparam as *mut WINDOWPOS) };
+                    // Empêcher le masquage automatique déclenché par Windows+D
+                    pos.flags &= !SWP_HIDEWINDOW;
                 }
             }
             WM_SHOWWINDOW => {
-                let is_explicit = BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst);
-                if !is_explicit && wparam == 0 {
-                    return 0;
+                if wparam == 0 {
+                    if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
+                        // Bloquer le masquage automatique déclenché par Windows+D
+                        return 0;
+                    }
+                    BAR_WINDOW_VISIBLE.store(false, Ordering::SeqCst);
+                } else {
+                    BAR_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
                 }
             }
             _ => {}
@@ -154,11 +213,63 @@ pub mod win32 {
         unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
     }
 
-    /// Rattache la fenêtre à Progman (Bureau Windows, architecture Stardock Fences / Desktop Widgets).
-    /// Permet à la fenêtre de résister à Win + D (car elle fait partie intégrante du Bureau)
-    /// tout en cédant 100% du focus et du premier plan aux autres applications actives.
+    /// Subclass Window Procedure pour la fenêtre des Paramètres (gestion du Drag & Drop)
+    unsafe extern "system" fn settings_wnd_proc_hook(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _uid_subclass: usize,
+        _ref_data: usize,
+    ) -> LRESULT {
+        match msg {
+            WM_DROPFILES => {
+                let hdrop = wparam as HDROP;
+                let mut pt = POINT { x: 0, y: 0 };
+                unsafe { DragQueryPoint(hdrop, &mut pt); }
+                let count = unsafe { DragQueryFileW(hdrop, 0xffffffff, std::ptr::null_mut(), 0) };
+                let mut files = Vec::new();
+                for i in 0..count {
+                    let mut buf = [0u16; 512];
+                    let len = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), 512) };
+                    if len > 0 {
+                        files.push(String::from_utf16_lossy(&buf[..len as usize]));
+                    }
+                }
+                unsafe { DragFinish(hdrop); }
+
+                if !files.is_empty() {
+                    if let Ok(guard) = DROP_CALLBACK.lock() {
+                        if let Some(cb) = guard.as_ref() {
+                            cb(files, pt.x, pt.y, true);
+                        }
+                    }
+                }
+                return 0;
+            }
+            _ => {}
+        }
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+
+    /// Applique le hook et active le Drag & Drop sur la fenêtre des Paramètres
+    pub fn setup_settings_window_styles(hwnd: HWND) {
+        if hwnd.is_null() {
+            return;
+        }
+        unsafe {
+            RemoveWindowSubclass(hwnd, Some(settings_wnd_proc_hook), 102);
+            SetWindowSubclass(hwnd, Some(settings_wnd_proc_hook), 102, 0);
+            let _ = RevokeDragDrop(hwnd);
+            DragAcceptFiles(hwnd, 1);
+            ChangeWindowMessageFilter(WM_DROPFILES, 1);
+            ChangeWindowMessageFilter(WM_COPYDATA, 1);
+            ChangeWindowMessageFilter(0x0049, 1);
+        }
+    }
+
     /// Applique les styles ToolWindow, NoActivate et configure le mode stay_on_top
-    pub fn setup_bar_window_styles(hwnd: HWND, stay_on_top: bool) {
+    pub fn setup_bar_window_styles(hwnd: HWND, stay_on_top: bool, floating: bool) {
         if hwnd.is_null() {
             return;
         }
@@ -168,27 +279,22 @@ pub mod win32 {
             RemoveWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101);
             SetWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101, 0);
 
-            // 2. Styles étendus : ToolWindow + NoActivate
+            // 2. Styles étendus : ToolWindow + NoActivate, JAMAIS de WS_EX_TOPMOST pour ne jamais écraser les applications actives
             let mut ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
             ex_style |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
             ex_style &= !WS_EX_APPWINDOW;
-            if stay_on_top {
-                ex_style |= WS_EX_TOPMOST;
-            } else {
-                ex_style &= !WS_EX_TOPMOST;
-            }
+            ex_style &= !WS_EX_TOPMOST;
             SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style as i32);
 
-            // 3. Styles standard (WS_POPUP pur sans bordures ni barres)
+            // 3. Styles standard : TOUJOURS WS_POPUP (jamais WS_CHILD) pour préserver le moteur de rendu Direct3D/Slint et les menus déroulants
             let mut style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-            style &= !(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME);
-            style |= WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+            style &= !(WS_CAPTION | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME | WS_CHILD);
+            style |= WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VISIBLE;
             SetWindowLongW(hwnd, GWL_STYLE, style as i32);
 
-            let insert_after = if stay_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
             SetWindowPos(
                 hwnd,
-                insert_after,
+                HWND_NOTOPMOST,
                 0,
                 0,
                 0,
@@ -196,115 +302,215 @@ pub mod win32 {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             );
 
-            // 4. Définir un pinceau de classe sombre pour que Windows ne peigne JAMAIS de fond blanc
-            use windows_sys::Win32::Graphics::Gdi::*;
-            let dark_brush = CreateSolidBrush(0x002a170f); // RGB(15, 23, 42) = #0f172a
-            SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, dark_brush as isize);
-
-            // Activer la réception du Drag & Drop
+            // Activer la réception du Drag & Drop et débloquer les filtres UIPI
+            let _ = RevokeDragDrop(hwnd);
             DragAcceptFiles(hwnd, 1);
+            ChangeWindowMessageFilter(WM_DROPFILES, 1);
+            ChangeWindowMessageFilter(WM_COPYDATA, 1);
+            ChangeWindowMessageFilter(0x0049, 1);
         }
     }
 
-    /// Amène la fenêtre au premier plan absolu au-dessus de toutes les fenêtres ouvertes
-    pub fn bring_to_foreground(hwnd: HWND, stay_on_top: bool) {
+    /// Configure Progman comme propriétaire de la fenêtre Popup (architecture Fences).
+    /// Maintient le bandeau au-dessus du Bureau lors de Win+D tout en laissant toutes
+    /// les fenêtres d'applications actives s'afficher au-dessus de lui.
+    pub fn set_desktop_parent(hwnd: HWND, enabled: bool) {
         if hwnd.is_null() {
             return;
         }
         unsafe {
-            if stay_on_top {
-                SetWindowPos(
-                    hwnd,
-                    HWND_TOPMOST,
-                    0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-                );
+            let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
+            if enabled && !progman.is_null() {
+                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
+                DESKTOP_PARENT.store(progman as usize, Ordering::SeqCst);
             } else {
-                // Flash to topmost to ensure it rises above any maximized or foreground window, then settle
-                SetWindowPos(
-                    hwnd,
-                    HWND_TOPMOST,
-                    0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-                );
-                SetWindowPos(
-                    hwnd,
-                    HWND_NOTOPMOST,
-                    0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-                );
+                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
+                DESKTOP_PARENT.store(0, Ordering::SeqCst);
             }
         }
     }
 
-    /// Donne le focus actif au bandeau lors du démasquage
+    /// Recherche le conteneur hôte du bureau Windows (Progman ou WorkerW contenant SHELLDLL_DefView).
+    /// Architecture identique à Stardock Fences / Rainmeter Desktop Widgets.
+    pub fn get_desktop_host_window() -> HWND {
+        unsafe {
+            let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
+            if progman.is_null() {
+                return std::ptr::null_mut();
+            }
+
+            // Envoi du message non documenté 0x052C pour scinder la pile WorkerW
+            let mut result: usize = 0;
+            SendMessageTimeoutW(
+                progman,
+                0x052C,
+                0x0000000D,
+                0,
+                SMTO_NORMAL,
+                1000,
+                &mut result as *mut usize as *mut _,
+            );
+
+            // 1. Vérifier si SHELLDLL_DefView est directement dans Progman
+            let defview_in_progman = FindWindowExW(
+                progman,
+                std::ptr::null_mut(),
+                to_wide_null("SHELLDLL_DefView").as_ptr(),
+                std::ptr::null(),
+            );
+            if !defview_in_progman.is_null() {
+                return progman;
+            }
+
+            // 2. Sinon, énumérer les WorkerW top-level pour trouver celui qui abrite SHELLDLL_DefView
+            unsafe extern "system" fn enum_workerw_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+                unsafe {
+                    let def_view = FindWindowExW(
+                        hwnd,
+                        std::ptr::null_mut(),
+                        to_wide_null("SHELLDLL_DefView").as_ptr(),
+                        std::ptr::null(),
+                    );
+                    if !def_view.is_null() {
+                        *(lparam as *mut HWND) = hwnd;
+                        return 0; // Arrêter l'énumération dès qu'on le trouve
+                    }
+                }
+                1
+            }
+
+            let mut host_workerw: HWND = std::ptr::null_mut();
+            EnumWindows(Some(enum_workerw_proc), &mut host_workerw as *mut _ as LPARAM);
+
+            if !host_workerw.is_null() {
+                return host_workerw;
+            }
+
+            progman
+        }
+    }
+
+    /// Amène la fenêtre au premier plan actif au-dessus des autres fenêtres
+    pub fn bring_to_foreground(hwnd: HWND, _stay_on_top: bool) {
+        if hwnd.is_null() {
+            return;
+        }
+        unsafe {
+            // 1. Détacher temporairement de Progman pour permettre l'élévation Z-Order au premier plan
+            SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
+
+            let fore_wnd = GetForegroundWindow();
+            let target_thread = if !fore_wnd.is_null() {
+                GetWindowThreadProcessId(fore_wnd, std::ptr::null_mut())
+            } else {
+                0
+            };
+            let current_thread = GetCurrentThreadId();
+            let attached = target_thread != 0
+                && target_thread != current_thread
+                && AttachThreadInput(current_thread, target_thread, 1) != 0;
+
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+            SetActiveWindow(hwnd);
+
+            SetWindowPos(
+                hwnd,
+                HWND_NOTOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
+
+            if attached {
+                AttachThreadInput(current_thread, target_thread, 0);
+            }
+
+            if _stay_on_top {
+                let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
+                if !progman.is_null() {
+                    SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
+                    DESKTOP_PARENT.store(progman as usize, Ordering::SeqCst);
+                }
+            }
+        }
+    }
+
+    /// Indique si la fenêtre du bandeau est actuellement la fenêtre active au premier plan
+    pub fn is_bar_window_foreground() -> bool {
+        let hwnd = find_bar_hwnd();
+        if hwnd.is_null() || unsafe { IsWindow(hwnd) == 0 } {
+            return false;
+        }
+        unsafe {
+            let fore = GetForegroundWindow();
+            fore == hwnd
+        }
+    }
+
+    /// Vérifie si le bandeau est actuellement visible à l'écran (non masqué hors écran)
+    pub fn is_bar_window_visible() -> bool {
+        let hwnd = find_bar_hwnd();
+        if hwnd.is_null() || unsafe { IsWindow(hwnd) == 0 } {
+            return false;
+        }
+        if BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
+            return false;
+        }
+        unsafe {
+            let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            if GetWindowRect(hwnd, &mut rect) != 0 {
+                if rect.left < -10000 || rect.top < -10000 {
+                    return false;
+                }
+            }
+        }
+        BAR_WINDOW_VISIBLE.load(Ordering::SeqCst)
+    }
+
+    pub fn restore_foreground_window(hwnd: HWND) {
+        if hwnd.is_null() || unsafe { IsWindow(hwnd) == 0 } {
+            return;
+        }
+        unsafe {
+            let target_thread = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+            let current_thread = GetCurrentThreadId();
+            let attached = target_thread != 0
+                && target_thread != current_thread
+                && AttachThreadInput(current_thread, target_thread, 1) != 0;
+
+            SetForegroundWindow(hwnd);
+            SetActiveWindow(hwnd);
+
+            if attached {
+                AttachThreadInput(current_thread, target_thread, 0);
+            }
+        }
+    }
+
+    /// Compatibilité API : l'affichage du bandeau ne doit jamais prendre le focus.
     pub fn focus_bar_window(hwnd: HWND) {
         if hwnd.is_null() {
             return;
         }
-        unsafe {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
-            
-            let cur_fg = GetForegroundWindow();
-            let cur_thread = GetWindowThreadProcessId(cur_fg, std::ptr::null_mut());
-            let our_thread = windows_sys::Win32::System::Threading::GetCurrentThreadId();
-
-            if cur_thread != 0 && cur_thread != our_thread {
-                AttachThreadInput(our_thread, cur_thread, 1);
-                SetForegroundWindow(hwnd);
-                BringWindowToTop(hwnd);
-                SetActiveWindow(hwnd);
-                SetFocus(hwnd);
-                AttachThreadInput(our_thread, cur_thread, 0);
-            } else {
-                SetForegroundWindow(hwnd);
-                BringWindowToTop(hwnd);
-                SetActiveWindow(hwnd);
-                SetFocus(hwnd);
-            }
-        }
+        unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE); }
     }
 
-    /// Enregistre la barre auprès de Windows (AppBar) pour réserver l'espace à l'écran
+    /// Compatibilité conservée pour les anciens appels. La barre ne doit pas
+    /// réserver l'espace de travail Windows.
     pub fn register_appbar(hwnd: HWND, position: &str, bar_h: i32) {
-        if hwnd.is_null() || position == "Floating" {
-            return;
-        }
-        unsafe {
-            use windows_sys::Win32::UI::Shell::*;
-            let mut abd = APPBARDATA {
-                cbSize: std::mem::size_of::<APPBARDATA>() as u32,
-                hWnd: hwnd,
-                uCallbackMessage: WM_APP + 3,
-                uEdge: if position == "Bottom" { ABE_BOTTOM } else { ABE_TOP },
-                rc: RECT { left: 0, top: 0, right: 0, bottom: 0 },
-                lParam: 0,
-            };
-
-            SHAppBarMessage(ABM_NEW, &mut abd);
-
-            let (screen_w, screen_h) = (
-                GetSystemMetrics(SM_CXSCREEN),
-                GetSystemMetrics(SM_CYSCREEN),
-            );
-
-            let safe_bar_h = bar_h.min(screen_h);
-
-            if position == "Bottom" {
-                abd.rc.left = 0;
-                abd.rc.right = screen_w;
-                abd.rc.top = screen_h - safe_bar_h;
-                abd.rc.bottom = screen_h;
-            } else {
-                abd.rc.left = 0;
-                abd.rc.right = screen_w;
-                abd.rc.top = 0;
-                abd.rc.bottom = safe_bar_h;
-            }
-
-            SHAppBarMessage(ABM_QUERYPOS, &mut abd);
-            SHAppBarMessage(ABM_SETPOS, &mut abd);
-        }
+        let _ = (hwnd, position, bar_h);
     }
 
     /// Retire l'enregistrement AppBar auprès de Windows
@@ -313,15 +519,9 @@ pub mod win32 {
             return;
         }
         unsafe {
-            use windows_sys::Win32::UI::Shell::*;
-            let mut abd = APPBARDATA {
-                cbSize: std::mem::size_of::<APPBARDATA>() as u32,
-                hWnd: hwnd,
-                uCallbackMessage: 0,
-                uEdge: 0,
-                rc: RECT { left: 0, top: 0, right: 0, bottom: 0 },
-                lParam: 0,
-            };
+            let mut abd: APPBARDATA = std::mem::zeroed();
+            abd.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
+            abd.hWnd = hwnd;
             SHAppBarMessage(ABM_REMOVE, &mut abd);
         }
     }
@@ -410,7 +610,7 @@ pub mod win32 {
             return;
         }
         let (work_x, work_y, work_w, work_h) = get_work_area();
-        let current_h = if is_expanded { (bar_h + 240).min(work_h) } else { bar_h.min(work_h) };
+        let current_h = if is_expanded { work_h } else { bar_h.min(work_h) };
 
         let (x, y, w, h) = match position {
             "Bottom" => {
@@ -441,6 +641,16 @@ pub mod win32 {
             );
             InvalidateRect(hwnd, std::ptr::null(), 1);
             UpdateWindow(hwnd);
+        }
+    }
+
+    pub fn move_bar_window_to(hwnd: HWND, x: i32, y: i32) {
+        if hwnd.is_null() {
+            return;
+        }
+        unsafe {
+            SetWindowPos(hwnd, HWND_TOP, x, y, 0, 0,
+                SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
 
@@ -482,6 +692,37 @@ pub mod win32 {
             "RETURN" | "ENTER" => VK_RETURN as u32,
             "TAB" => VK_TAB as u32,
             "ESCAPE" | "ESC" => VK_ESCAPE as u32,
+            "BACKSPACE" | "BACK" => VK_BACK as u32,
+            "PRINTSCREEN" | "PRINT" | "SNAPSHOT" => VK_SNAPSHOT as u32,
+            "PAUSE" => VK_PAUSE as u32,
+            "SCROLLLOCK" | "SCROLL" => VK_SCROLL as u32,
+            "INSERT" | "INS" => VK_INSERT as u32,
+            "DELETE" | "DEL" | "SUPPR" => VK_DELETE as u32,
+            "HOME" | "DEBUT" => VK_HOME as u32,
+            "END" | "FIN" => VK_END as u32,
+            "PAGEUP" | "PGUP" | "PRIOR" => VK_PRIOR as u32,
+            "PAGEDOWN" | "PGDN" | "NEXT" => VK_NEXT as u32,
+            "UP" | "HAUT" => VK_UP as u32,
+            "DOWN" | "BAS" => VK_DOWN as u32,
+            "LEFT" | "GAUCHE" => VK_LEFT as u32,
+            "RIGHT" | "DROITE" => VK_RIGHT as u32,
+            "CAPSLOCK" | "CAPS" | "CAPITAL" => VK_CAPITAL as u32,
+            "NUMLOCK" => VK_NUMLOCK as u32,
+            "NUMPAD0" => VK_NUMPAD0 as u32,
+            "NUMPAD1" => VK_NUMPAD1 as u32,
+            "NUMPAD2" => VK_NUMPAD2 as u32,
+            "NUMPAD3" => VK_NUMPAD3 as u32,
+            "NUMPAD4" => VK_NUMPAD4 as u32,
+            "NUMPAD5" => VK_NUMPAD5 as u32,
+            "NUMPAD6" => VK_NUMPAD6 as u32,
+            "NUMPAD7" => VK_NUMPAD7 as u32,
+            "NUMPAD8" => VK_NUMPAD8 as u32,
+            "NUMPAD9" => VK_NUMPAD9 as u32,
+            "MULTIPLY" => VK_MULTIPLY as u32,
+            "ADD" => VK_ADD as u32,
+            "SUBTRACT" => VK_SUBTRACT as u32,
+            "DECIMAL" => VK_DECIMAL as u32,
+            "DIVIDE" => VK_DIVIDE as u32,
             "F1" => VK_F1 as u32,
             "F2" => VK_F2 as u32,
             "F3" => VK_F3 as u32,
@@ -494,6 +735,18 @@ pub mod win32 {
             "F10" => VK_F10 as u32,
             "F11" => VK_F11 as u32,
             "F12" => VK_F12 as u32,
+            "F13" => 0x7C,
+            "F14" => 0x7D,
+            "F15" => 0x7E,
+            "F16" => 0x7F,
+            "F17" => 0x80,
+            "F18" => 0x81,
+            "F19" => 0x82,
+            "F20" => 0x83,
+            "F21" => 0x84,
+            "F22" => 0x85,
+            "F23" => 0x86,
+            "F24" => 0x87,
             s if s.len() == 1 => {
                 let c = s.chars().next().unwrap();
                 c as u32
@@ -631,58 +884,300 @@ pub mod win32 {
         }
     }
 
-    /// Extrait l'icône d'un fichier .exe, .ico ou .lnk et l'enregistre en cache PNG
-    pub fn extract_and_cache_icon(target_path: &str, cache_dir: &Path) -> Option<PathBuf> {
-        let p = Path::new(target_path);
-        let stem = p.file_stem()?.to_string_lossy();
-        let cache_file = cache_dir.join(format!("{}.png", stem));
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    pub struct SHFILEINFOW {
+        pub hIcon: HICON,
+        pub iIcon: i32,
+        pub dwAttributes: u32,
+        pub szDisplayName: [u16; 260],
+        pub szTypeName: [u16; 80],
+    }
 
-        if cache_file.exists() {
-            return Some(cache_file);
+    pub const SHGFI_ICON: u32 = 0x000000100;
+    pub const SHGFI_LARGEICON: u32 = 0x000000000;
+    pub const SHGFI_SMALLICON: u32 = 0x000000001;
+
+    unsafe extern "system" {
+        pub fn SHGetFileInfoW(
+            pszpath: *const u16,
+            dwfileattributes: u32,
+            psfi: *mut SHFILEINFOW,
+            cbfileinfo: u32,
+            uflags: u32,
+        ) -> usize;
+    }
+
+    use windows_sys::core::GUID;
+
+    const CLSID_SHELL_LINK: GUID = GUID {
+        data1: 0x00021401,
+        data2: 0x0000,
+        data3: 0x0000,
+        data4: [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
+    };
+
+    const IID_ISHELL_LINK_W: GUID = GUID {
+        data1: 0x000214F9,
+        data2: 0x0000,
+        data3: 0x0000,
+        data4: [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
+    };
+
+    const IID_IPERSIST_FILE: GUID = GUID {
+        data1: 0x0000010b,
+        data2: 0x0000,
+        data3: 0x0000,
+        data4: [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
+    };
+
+    #[repr(C)]
+    struct IUnknownVtbl {
+        query_interface: unsafe extern "system" fn(*mut std::ffi::c_void, *const GUID, *mut *mut std::ffi::c_void) -> i32,
+        add_ref: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+        release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+    }
+
+    #[repr(C)]
+    struct IPersistFileVtbl {
+        unknown: IUnknownVtbl,
+        get_class_id: unsafe extern "system" fn(*mut std::ffi::c_void, *mut GUID) -> i32,
+        is_dirty: unsafe extern "system" fn(*mut std::ffi::c_void) -> i32,
+        load: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16, u32) -> i32,
+        save: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16, i32) -> i32,
+        save_completed: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16) -> i32,
+        get_cur_file: unsafe extern "system" fn(*mut std::ffi::c_void, *mut *mut u16) -> i32,
+    }
+
+    #[repr(C)]
+    struct IShellLinkWVtbl {
+        unknown: IUnknownVtbl,
+        get_path: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, i32, *mut std::ffi::c_void, u32) -> i32,
+        get_id_list: unsafe extern "system" fn(*mut std::ffi::c_void, *mut *mut std::ffi::c_void) -> i32,
+        set_id_list: unsafe extern "system" fn(*mut std::ffi::c_void, *const std::ffi::c_void) -> i32,
+        get_description: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, i32) -> i32,
+        set_description: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16) -> i32,
+        get_working_directory: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, i32) -> i32,
+        set_working_directory: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16) -> i32,
+        get_arguments: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, i32) -> i32,
+        set_arguments: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16) -> i32,
+        get_hotkey: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16) -> i32,
+        set_hotkey: unsafe extern "system" fn(*mut std::ffi::c_void, u16) -> i32,
+        get_show_cmd: unsafe extern "system" fn(*mut std::ffi::c_void, *mut i32) -> i32,
+        set_show_cmd: unsafe extern "system" fn(*mut std::ffi::c_void, i32) -> i32,
+        get_icon_location: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, i32, *mut i32) -> i32,
+        set_icon_location: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16, i32) -> i32,
+        set_relative_path: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16, u32) -> i32,
+        resolve: unsafe extern "system" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, u32) -> i32,
+        set_path: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16) -> i32,
+    }
+
+    /// Résout la cible réelle d'un raccourci Windows (.lnk), ses arguments et son dossier de travail
+    pub fn resolve_lnk_target_full(lnk_path: &str) -> Option<(PathBuf, String, PathBuf)> {
+        let clean_path = lnk_path.trim().trim_matches('"');
+        if !clean_path.to_lowercase().ends_with(".lnk") || !Path::new(clean_path).exists() {
+            return None;
         }
 
         unsafe {
-            let wide_path = to_wide_null(target_path);
-            let mut hicon: HICON = std::ptr::null_mut();
+            windows_sys::Win32::System::Com::CoInitialize(std::ptr::null_mut());
 
-            // Extraire l'icône principale du fichier
-            ExtractIconExW(
-                wide_path.as_ptr(),
-                0,
-                &mut hicon,
+            let mut p_shell_link: *mut std::ffi::c_void = std::ptr::null_mut();
+            let hr = windows_sys::Win32::System::Com::CoCreateInstance(
+                &CLSID_SHELL_LINK as *const _ as *const _,
                 std::ptr::null_mut(),
-                1,
+                1, // CLSCTX_INPROC_SERVER
+                &IID_ISHELL_LINK_W as *const _ as *const _,
+                &mut p_shell_link,
+            );
+            if hr < 0 || p_shell_link.is_null() {
+                return None;
+            }
+
+            let link_vtbl = &**(p_shell_link as *mut *mut IShellLinkWVtbl);
+
+            let mut p_persist_file: *mut std::ffi::c_void = std::ptr::null_mut();
+            let hr2 = (link_vtbl.unknown.query_interface)(
+                p_shell_link,
+                &IID_IPERSIST_FILE,
+                &mut p_persist_file,
             );
 
+            let mut result = None;
+            if hr2 >= 0 && !p_persist_file.is_null() {
+                let persist_vtbl = &**(p_persist_file as *mut *mut IPersistFileVtbl);
+
+                let wide_lnk = to_wide_null(clean_path);
+                let hr3 = (persist_vtbl.load)(p_persist_file, wide_lnk.as_ptr(), 0);
+                if hr3 >= 0 {
+                    // SLR_NO_UI (0x1) | SLR_ANY_MATCH (0x2)
+                    let _ = (link_vtbl.resolve)(p_shell_link, std::ptr::null_mut(), 1 | 2);
+
+                    let mut path_buf = [0u16; 1024];
+                    let mut args_buf = [0u16; 1024];
+                    let mut dir_buf = [0u16; 1024];
+
+                    let hr_path = (link_vtbl.get_path)(
+                        p_shell_link,
+                        path_buf.as_mut_ptr(),
+                        path_buf.len() as i32,
+                        std::ptr::null_mut(),
+                        0,
+                    );
+                    let _ = (link_vtbl.get_arguments)(
+                        p_shell_link,
+                        args_buf.as_mut_ptr(),
+                        args_buf.len() as i32,
+                    );
+                    let _ = (link_vtbl.get_working_directory)(
+                        p_shell_link,
+                        dir_buf.as_mut_ptr(),
+                        dir_buf.len() as i32,
+                    );
+
+                    if hr_path >= 0 {
+                        let len = path_buf.iter().position(|&c| c == 0).unwrap_or(path_buf.len());
+                        let target_str = String::from_utf16_lossy(&path_buf[..len]);
+                        if !target_str.is_empty() {
+                            let arg_len = args_buf.iter().position(|&c| c == 0).unwrap_or(args_buf.len());
+                            let args_str = String::from_utf16_lossy(&args_buf[..arg_len]);
+                            let dir_len = dir_buf.iter().position(|&c| c == 0).unwrap_or(dir_buf.len());
+                            let dir_str = String::from_utf16_lossy(&dir_buf[..dir_len]);
+                            result = Some((PathBuf::from(target_str), args_str, PathBuf::from(dir_str)));
+                        }
+                    }
+                }
+                (persist_vtbl.unknown.release)(p_persist_file);
+            }
+
+            (link_vtbl.unknown.release)(p_shell_link);
+            result
+        }
+    }
+
+    /// Résout la cible réelle d'un raccourci Windows (.lnk) ainsi que ses arguments
+    pub fn resolve_lnk_target(lnk_path: &str) -> Option<(PathBuf, String)> {
+        resolve_lnk_target_full(lnk_path).map(|(t, a, _)| (t, a))
+    }
+
+    /// Recherche et résolution du chemin réel d'un exécutable (.exe, .lnk, commande PATH, dossier Windows)
+    pub fn resolve_target_executable(raw_path: &str) -> Option<String> {
+        let trimmed = raw_path.trim().trim_matches('"');
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        // 0. Si c'est un raccourci .lnk, résoudre sa cible réelle
+        if trimmed.to_lowercase().ends_with(".lnk") {
+            if let Some((target, _)) = resolve_lnk_target(trimmed) {
+                return Some(target.to_string_lossy().to_string());
+            }
+        }
+
+        // 1. Si le chemin existe directement
+        if Path::new(trimmed).exists() {
+            return Some(trimmed.to_string());
+        }
+
+        // 2. Si le chemin contient des arguments (ex: "C:\App\app.exe" --param)
+        if let Some((first, _)) = trimmed.split_once(' ') {
+            let candidate = first.trim_matches('"');
+            if Path::new(candidate).exists() {
+                return Some(candidate.to_string());
+            }
+        }
+
+        // 3. Nom court sans chemin (ex: explorer.exe, calc.exe, notepad.exe)
+        let filename = Path::new(trimmed)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(trimmed);
+
+        let standard_dirs = [
+            "C:\\Windows\\",
+            "C:\\Windows\\System32\\",
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\",
+        ];
+        for dir in &standard_dirs {
+            let candidate = format!("{}{}", dir, filename);
+            if Path::new(&candidate).exists() {
+                return Some(candidate);
+            }
+        }
+
+        // 4. Recherche dans les dossiers du PATH
+        if let Ok(path_var) = std::env::var("PATH") {
+            for dir in path_var.split(';') {
+                let trimmed_dir = dir.trim();
+                if !trimmed_dir.is_empty() {
+                    let candidate = Path::new(trimmed_dir).join(filename);
+                    if candidate.exists() {
+                        return Some(candidate.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Convertit un HICON Win32 en image RGBA et libère les ressources associées via DrawIconEx sur DIBSection 32-bit
+    pub unsafe fn hicon_to_rgba_image(hicon: HICON) -> Option<image::RgbaImage> {
+        unsafe {
             if hicon.is_null() {
                 return None;
             }
 
-            // Convertir HICON en image RGBA
             let mut icon_info: ICONINFO = std::mem::zeroed();
             if GetIconInfo(hicon, &mut icon_info) == 0 {
                 DestroyIcon(hicon);
                 return None;
             }
 
-            let hdc = CreateCompatibleDC(std::ptr::null_mut());
-            let mut bmp: BITMAP = std::mem::zeroed();
-            GetObjectW(
-                icon_info.hbmColor,
-                std::mem::size_of::<BITMAP>() as i32,
-                &mut bmp as *mut _ as *mut _,
-            );
-
-            let width = bmp.bmWidth;
-            let height = bmp.bmHeight;
+            let mut width = 32i32;
+            let mut height = 32i32;
+            if !icon_info.hbmColor.is_null() {
+                let mut bmp: BITMAP = std::mem::zeroed();
+                if GetObjectW(
+                    icon_info.hbmColor,
+                    std::mem::size_of::<BITMAP>() as i32,
+                    &mut bmp as *mut _ as *mut _,
+                ) > 0 {
+                    width = bmp.bmWidth;
+                    height = bmp.bmHeight;
+                }
+            } else if !icon_info.hbmMask.is_null() {
+                let mut bmp: BITMAP = std::mem::zeroed();
+                if GetObjectW(
+                    icon_info.hbmMask,
+                    std::mem::size_of::<BITMAP>() as i32,
+                    &mut bmp as *mut _ as *mut _,
+                ) > 0 {
+                    width = bmp.bmWidth;
+                    height = bmp.bmHeight / 2;
+                }
+            }
 
             if width <= 0 || height <= 0 {
-                if !icon_info.hbmColor.is_null() { DeleteObject(icon_info.hbmColor); }
-                if !icon_info.hbmMask.is_null() { DeleteObject(icon_info.hbmMask); }
-                DeleteDC(hdc);
-                DestroyIcon(hicon);
-                return None;
+                width = 32;
+                height = 32;
             }
+
+            // Plafonner la dimension à 48x48 max pour préserver la mémoire RAM dans Slint
+            // (Une icône 256x256 non compressée pèse 262 Ko en RAM, alors que 48x48 ne pèse que 9 Ko)
+            const MAX_ICON_DIM: i32 = 48;
+            if width > MAX_ICON_DIM || height > MAX_ICON_DIM {
+                if width >= height {
+                    height = ((height as f32 * (MAX_ICON_DIM as f32 / width as f32)).round() as i32).max(16);
+                    width = MAX_ICON_DIM;
+                } else {
+                    width = ((width as f32 * (MAX_ICON_DIM as f32 / height as f32)).round() as i32).max(16);
+                    height = MAX_ICON_DIM;
+                }
+            }
+
+            let hdc_screen = GetDC(std::ptr::null_mut());
+            let hdc_mem = CreateCompatibleDC(hdc_screen);
 
             let mut bi: BITMAPINFO = std::mem::zeroed();
             bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
@@ -692,39 +1187,548 @@ pub mod win32 {
             bi.bmiHeader.biBitCount = 32;
             bi.bmiHeader.biCompression = BI_RGB;
 
-            let mut raw_pixels: Vec<u8> = vec![0; (width * height * 4) as usize];
-            GetDIBits(
-                hdc,
-                icon_info.hbmColor,
-                0,
-                height as u32,
-                raw_pixels.as_mut_ptr() as *mut _,
-                &mut bi,
+            let mut p_bits: *mut std::ffi::c_void = std::ptr::null_mut();
+            let hbitmap = CreateDIBSection(
+                hdc_mem,
+                &bi,
                 DIB_RGB_COLORS,
+                &mut p_bits,
+                std::ptr::null_mut(),
+                0,
             );
 
-            // BGRX / BGRA -> RGBA
+            if hbitmap.is_null() || p_bits.is_null() {
+                if !icon_info.hbmColor.is_null() { DeleteObject(icon_info.hbmColor); }
+                if !icon_info.hbmMask.is_null() { DeleteObject(icon_info.hbmMask); }
+                DeleteDC(hdc_mem);
+                ReleaseDC(std::ptr::null_mut(), hdc_screen);
+                DestroyIcon(hicon);
+                return None;
+            }
+
+            let old_bmp = SelectObject(hdc_mem, hbitmap);
+
+            // Initialiser le buffer 32-bit en transparent absolu
+            std::ptr::write_bytes(p_bits as *mut u8, 0, (width * height * 4) as usize);
+
+            // Dessiner fidèlement l'icône sur le DIBSection (gère alpha 32-bit, masques et palettes)
+            DrawIconEx(
+                hdc_mem,
+                0,
+                0,
+                hicon,
+                width,
+                height,
+                0,
+                std::ptr::null_mut(),
+                DI_NORMAL,
+            );
+
+            SelectObject(hdc_mem, old_bmp);
+
+            let mut raw_pixels = vec![0u8; (width * height * 4) as usize];
+            std::ptr::copy_nonoverlapping(
+                p_bits as *const u8,
+                raw_pixels.as_mut_ptr(),
+                raw_pixels.len(),
+            );
+
+            // Détecter si l'icône fournit un canal alpha natif
+            let mut has_alpha = false;
+            for chunk in raw_pixels.chunks_exact(4) {
+                if chunk[3] > 0 {
+                    has_alpha = true;
+                    break;
+                }
+            }
+
+            // Convertir BGRA -> RGBA et attribuer l'opacité requise
             for chunk in raw_pixels.chunks_exact_mut(4) {
                 let b = chunk[0];
                 let r = chunk[2];
                 chunk[0] = r;
                 chunk[2] = b;
-                if chunk[3] == 0 && (chunk[0] > 0 || chunk[1] > 0 || chunk[2] > 0) {
-                    chunk[3] = 255;
+                if !has_alpha {
+                    if chunk[0] > 0 || chunk[1] > 0 || chunk[2] > 0 {
+                        chunk[3] = 255;
+                    }
                 }
             }
 
+            DeleteObject(hbitmap);
+            DeleteDC(hdc_mem);
+            ReleaseDC(std::ptr::null_mut(), hdc_screen);
+
             if !icon_info.hbmColor.is_null() { DeleteObject(icon_info.hbmColor); }
             if !icon_info.hbmMask.is_null() { DeleteObject(icon_info.hbmMask); }
-            DeleteDC(hdc);
             DestroyIcon(hicon);
 
-            if let Some(img) = image::RgbaImage::from_raw(width as u32, height as u32, raw_pixels) {
+            image::RgbaImage::from_raw(width as u32, height as u32, raw_pixels)
+        }
+    }
+
+    /// Extrait l'icône d'un fichier (.exe, .lnk, .ico, dossier, etc.) et l'enregistre en cache PNG
+    pub fn extract_and_cache_icon(target_path: &str, cache_dir: &Path) -> Option<PathBuf> {
+        let clean_path = target_path.trim().trim_matches('"');
+        if clean_path.is_empty() {
+            return None;
+        }
+
+        // Résoudre le véritable chemin du fichier si arguments ou nom court
+        let resolved = resolve_target_executable(clean_path);
+        let path_to_use = resolved.as_deref().unwrap_or(clean_path);
+
+        let p = Path::new(path_to_use);
+        let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "icon".to_string());
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(path_to_use, &mut hasher);
+        let hash = std::hash::Hasher::finish(&hasher);
+
+        let _ = std::fs::create_dir_all(cache_dir);
+        let cache_file = cache_dir.join(format!("{}_{:x}_48.png", stem, hash));
+        if cache_file.exists() && std::fs::metadata(&cache_file).map(|m| m.len() > 0).unwrap_or(false) {
+            return Some(cache_file);
+        }
+
+        // Vérifier l'ancien format de cache sans suffixe _48
+        let legacy_file1 = cache_dir.join(format!("{}_{:x}.png", stem, hash));
+        if legacy_file1.exists() && std::fs::metadata(&legacy_file1).map(|m| m.len() > 0).unwrap_or(false) {
+            return Some(legacy_file1);
+        }
+
+        let legacy_file2 = cache_dir.join(format!("{}.png", stem));
+        if legacy_file2.exists() && std::fs::metadata(&legacy_file2).map(|m| m.len() > 0).unwrap_or(false) {
+            return Some(legacy_file2);
+        }
+
+        // Vérifier si une icône pour ce stem (ou le stem du raccourci initial) existe déjà dans icon_cache
+        let raw_stem = Path::new(clean_path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        if let Ok(entries) = std::fs::read_dir(cache_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if (name_str.starts_with(&format!("{}_", stem))
+                    || name_str.starts_with(&format!("{}.", stem))
+                    || (!raw_stem.is_empty() && (name_str.starts_with(&format!("{}_", raw_stem)) || name_str.starts_with(&format!("{}.", raw_stem)))))
+                    && name_str.ends_with(".png")
+                {
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.len() > 0 {
+                            return Some(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+
+        unsafe {
+            let wide_path = to_wide_null(path_to_use);
+
+            // 1. Essayer d'abord avec SHGetFileInfoW (résout .lnk, exe, dossiers, extensions associées)
+            let mut shfi: SHFILEINFOW = std::mem::zeroed();
+            let res = SHGetFileInfoW(
+                wide_path.as_ptr(),
+                0,
+                &mut shfi,
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_ICON | SHGFI_LARGEICON,
+            );
+
+            let mut hicon = if res != 0 && !shfi.hIcon.is_null() {
+                shfi.hIcon
+            } else {
+                std::ptr::null_mut()
+            };
+
+            // 2. Si non trouvé ou échec, essayer ExtractIconExW
+            if hicon.is_null() {
+                let mut ex_icon: HICON = std::ptr::null_mut();
+                ExtractIconExW(wide_path.as_ptr(), 0, &mut ex_icon, std::ptr::null_mut(), 1);
+                if !ex_icon.is_null() {
+                    hicon = ex_icon;
+                }
+            }
+
+            if hicon.is_null() {
+                return None;
+            }
+
+            if let Some(img) = hicon_to_rgba_image(hicon) {
                 if img.save(&cache_file).is_ok() {
                     return Some(cache_file);
                 }
             }
+
             None
+        }
+    }
+
+    /// Boîte de dialogue native Windows pour choisir une couleur avec palette et pipette
+    pub fn pick_color_dialog(initial_hex: &str) -> Option<String> {
+        #[repr(C)]
+        struct CHOOSECOLORW {
+            l_struct_size: u32,
+            hwnd_owner: HWND,
+            h_instance: HWND,
+            rgb_result: u32,
+            lp_cust_colors: *mut u32,
+            flags: u32,
+            l_cust_data: isize,
+            lpfn_hook: Option<unsafe extern "system" fn(HWND, u32, usize, isize) -> usize>,
+            lp_template_name: *const u16,
+        }
+
+        #[link(name = "comdlg32")]
+        unsafe extern "system" {
+            fn ChooseColorW(lpcc: *mut CHOOSECOLORW) -> i32;
+        }
+
+        let mut cust_colors: [u32; 16] = [
+            0x1e293b, 0x0f172a, 0x334155, 0x2563eb,
+            0x3b82f6, 0x38bdf8, 0x06b6d4, 0x10b981,
+            0xf59e0b, 0xef4444, 0xec4899, 0x8b5cf6,
+            0xffffff, 0xf8fafc, 0x94a3b8, 0x000000,
+        ];
+
+        let clean_hex = initial_hex.trim().trim_start_matches('#');
+        let initial_rgb = if clean_hex.len() >= 6 {
+            let r = u32::from_str_radix(&clean_hex[0..2], 16).unwrap_or(0);
+            let g = u32::from_str_radix(&clean_hex[2..4], 16).unwrap_or(0);
+            let b = u32::from_str_radix(&clean_hex[4..6], 16).unwrap_or(0);
+            r | (g << 8) | (b << 16)
+        } else {
+            0x3b291e
+        };
+
+        let mut cc: CHOOSECOLORW = unsafe { std::mem::zeroed() };
+        cc.l_struct_size = std::mem::size_of::<CHOOSECOLORW>() as u32;
+        cc.rgb_result = initial_rgb;
+        cc.lp_cust_colors = cust_colors.as_mut_ptr();
+        cc.flags = 0x00000001 | 0x00000002; // CC_RGBINIT | CC_FULLOPEN
+
+        let ret = unsafe { ChooseColorW(&mut cc) };
+        if ret != 0 {
+            let r = (cc.rgb_result & 0xFF) as u8;
+            let g = ((cc.rgb_result >> 8) & 0xFF) as u8;
+            let b = ((cc.rgb_result >> 16) & 0xFF) as u8;
+            Some(format!("#{:02x}{:02x}{:02x}", r, g, b))
+        } else {
+            None
+        }
+    }
+
+    /// Pipette de sélection d'écran (Eyedropper) : capture la couleur de n'importe quel pixel de l'écran au clic
+    pub fn pick_color_eyedropper() -> Option<String> {
+        unsafe {
+            // Attendre le relâchement du bouton gauche s'il était déjà enfoncé
+            while (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0 {
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
+
+            let cursor = LoadCursorW(std::ptr::null_mut(), IDC_CROSS);
+
+            let start_time = std::time::Instant::now();
+            loop {
+                if !cursor.is_null() {
+                    SetCursor(cursor);
+                }
+
+                // Annulation après 45 secondes d'inactivité
+                if start_time.elapsed().as_secs() > 45 {
+                    return None;
+                }
+
+                // Annulation via Echap ou Clic droit
+                if (GetAsyncKeyState(VK_ESCAPE as i32) as u16 & 0x8000) != 0
+                    || (GetAsyncKeyState(VK_RBUTTON as i32) as u16 & 0x8000) != 0
+                {
+                    return None;
+                }
+
+                // Clic gauche : capture du pixel sous le curseur
+                if (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0 {
+                    let mut pt = POINT { x: 0, y: 0 };
+                    GetCursorPos(&mut pt);
+                    let hdc = GetDC(std::ptr::null_mut());
+                    if !hdc.is_null() {
+                        let pixel = GetPixel(hdc, pt.x, pt.y);
+                        ReleaseDC(std::ptr::null_mut(), hdc);
+                        if pixel != 0xFFFFFFFF {
+                            let r = (pixel & 0xFF) as u8;
+                            let g = ((pixel >> 8) & 0xFF) as u8;
+                            let b = ((pixel >> 16) & 0xFF) as u8;
+                            return Some(format!("#{:02x}{:02x}{:02x}", r, g, b));
+                        }
+                    }
+                    return None;
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
+        }
+    }
+
+    #[repr(C)]
+    struct OPENFILENAMEW {
+        l_struct_size: u32,
+        hwnd_owner: HWND,
+        h_instance: HWND,
+        lpstr_filter: *const u16,
+        lpstr_custom_filter: *mut u16,
+        n_max_cust_filter: u32,
+        n_filter_index: u32,
+        lpstr_file: *mut u16,
+        n_max_file: u32,
+        lpstr_file_title: *mut u16,
+        n_max_file_title: u32,
+        lpstr_initial_dir: *const u16,
+        lpstr_title: *const u16,
+        flags: u32,
+        n_file_offset: u16,
+        n_file_extension: u16,
+        lpstr_def_ext: *const u16,
+        l_cust_data: isize,
+        lpfn_hook: Option<unsafe extern "system" fn(HWND, u32, usize, isize) -> usize>,
+        lp_template_name: *const u16,
+        pv_reserved: *mut std::ffi::c_void,
+        dw_reserved: u32,
+        flags_ex: u32,
+    }
+
+    #[link(name = "comdlg32")]
+    unsafe extern "system" {
+        fn GetOpenFileNameW(lpofn: *mut OPENFILENAMEW) -> i32;
+    }
+
+    /// Boîte de dialogue native Windows pour choisir un fichier (remplace la dépendance rfd)
+    pub fn pick_file_dialog(
+        title: Option<&str>,
+        filter_description: Option<&str>,
+        filter_extensions: Option<&[&str]>,
+    ) -> Option<PathBuf> {
+        let mut filter_utf16: Vec<u16> = Vec::new();
+        if let (Some(desc), Some(exts)) = (filter_description, filter_extensions) {
+            filter_utf16.extend(desc.encode_utf16());
+            filter_utf16.push(0);
+            let mut pattern = String::new();
+            for (idx, ext) in exts.iter().enumerate() {
+                if idx > 0 {
+                    pattern.push(';');
+                }
+                if ext.starts_with("*.") {
+                    pattern.push_str(ext);
+                } else if ext.starts_with('.') {
+                    pattern.push('*');
+                    pattern.push_str(ext);
+                } else {
+                    pattern.push_str("*.");
+                    pattern.push_str(ext);
+                }
+            }
+            filter_utf16.extend(pattern.encode_utf16());
+            filter_utf16.push(0);
+        }
+        // Toujours ajouter "Tous les fichiers (*.*)"
+        filter_utf16.extend("Tous les fichiers (*.*)".encode_utf16());
+        filter_utf16.push(0);
+        filter_utf16.extend("*.*".encode_utf16());
+        filter_utf16.push(0);
+        filter_utf16.push(0); // Terminateur double-null
+
+        let title_utf16: Option<Vec<u16>> = title.map(to_wide_null);
+        let mut file_buf: [u16; 1024] = [0; 1024];
+
+        let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+        ofn.l_struct_size = std::mem::size_of::<OPENFILENAMEW>() as u32;
+        ofn.lpstr_filter = filter_utf16.as_ptr();
+        ofn.n_filter_index = 1;
+        ofn.lpstr_file = file_buf.as_mut_ptr();
+        ofn.n_max_file = file_buf.len() as u32;
+        ofn.lpstr_title = title_utf16.as_ref().map(|v| v.as_ptr()).unwrap_or(std::ptr::null());
+        // OFN_EXPLORER (0x80000) | OFN_FILEMUSTEXIST (0x1000) | OFN_PATHMUSTEXIST (0x800) | OFN_ENABLESIZING (0x800000)
+        ofn.flags = 0x00080000 | 0x00001000 | 0x00000800 | 0x00800000;
+
+        unsafe {
+            if GetOpenFileNameW(&mut ofn) != 0 {
+                let len = file_buf.iter().position(|&c| c == 0).unwrap_or(file_buf.len());
+                let path_str = String::from_utf16_lossy(&file_buf[..len]);
+                if !path_str.is_empty() {
+                    Some(PathBuf::from(path_str))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    }
+
+    pub const IDM_ITEM_EDIT: usize = 1;
+    pub const IDM_ITEM_DELETE: usize = 2;
+
+    /// Découpe une chaîne en (exécutable, arguments) si elle contient des guillemets ou des espaces
+    fn split_target_and_args(s: &str) -> Option<(String, String)> {
+        let trimmed = s.trim();
+        if trimmed.starts_with('"') {
+            if let Some(end_quote) = trimmed[1..].find('"') {
+                let exe = &trimmed[1..=end_quote];
+                let args = trimmed[end_quote + 2..].trim();
+                return Some((exe.to_string(), args.to_string()));
+            }
+        } else if let Some(space_idx) = trimmed.find(' ') {
+            let exe = &trimmed[..space_idx];
+            let args = trimmed[space_idx + 1..].trim();
+            if Path::new(exe).exists() {
+                return Some((exe.to_string(), args.to_string()));
+            }
+        }
+        None
+    }
+
+    /// Détermine le dossier de travail approprié pour une cible (exécutable, raccourci, dossier)
+    pub fn get_target_working_directory(target: &str) -> Option<PathBuf> {
+        let clean = target.trim().trim_matches('"');
+        if clean.is_empty() {
+            return None;
+        }
+
+        // Si c'est une URL ou protocole, aucun répertoire de travail local
+        if clean.starts_with("http://") || clean.starts_with("https://") || clean.starts_with("mailto:") {
+            return None;
+        }
+
+        // Si c'est un raccourci .lnk, tenter d'extraire son dossier de travail ou le parent de sa cible
+        if clean.to_lowercase().ends_with(".lnk") {
+            if let Some((target_path, _args, work_dir)) = resolve_lnk_target_full(clean) {
+                if !work_dir.as_os_str().is_empty() && work_dir.exists() && work_dir.is_dir() {
+                    return Some(work_dir);
+                }
+                if let Some(parent) = target_path.parent() {
+                    if parent.exists() && parent.is_dir() {
+                        return Some(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+
+        // Si le chemin direct existe sur disque
+        let p = Path::new(clean);
+        if p.exists() {
+            if p.is_dir() {
+                return Some(p.to_path_buf());
+            }
+            if let Some(parent) = p.parent() {
+                if parent.exists() && parent.is_dir() {
+                    return Some(parent.to_path_buf());
+                }
+            }
+        }
+
+        // Cas où target contient des guillemets ou des arguments (ex: "C:\app.exe" -arg)
+        if let Some((exe_part, _)) = split_target_and_args(clean) {
+            let p_exe = Path::new(&exe_part);
+            if p_exe.exists() {
+                if let Some(parent) = p_exe.parent() {
+                    if parent.exists() && parent.is_dir() {
+                        return Some(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Ouvre un fichier, dossier, application ou URL avec le programme par défaut de Windows,
+    /// en transmettant son répertoire de travail (Working Directory) réel et ses arguments éventuels
+    pub fn open_target(target: &str, args: &str) -> bool {
+        let clean = target.trim().trim_matches('"');
+        if clean.is_empty() {
+            return false;
+        }
+
+        let target_wide = to_wide_null(clean);
+        let operation = to_wide_null("open");
+
+        let args_clean = args.trim();
+        let args_wide = if !args_clean.is_empty() {
+            Some(to_wide_null(args_clean))
+        } else {
+            None
+        };
+
+        let working_dir = get_target_working_directory(clean);
+        let dir_wide = working_dir.as_ref().map(|d| to_wide_null(&d.to_string_lossy()));
+
+        unsafe {
+            let res = windows_sys::Win32::UI::Shell::ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                target_wide.as_ptr(),
+                if let Some(ref a) = args_wide { a.as_ptr() } else { std::ptr::null() },
+                if let Some(ref d) = dir_wide { d.as_ptr() } else { std::ptr::null() },
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL as i32,
+            );
+            (res as isize) > 32
+        }
+    }
+
+    /// Ouvre un fichier, dossier, application ou URL avec le programme par défaut de Windows
+    pub fn open_path_or_url(target: &str) -> bool {
+        open_target(target, "")
+    }
+
+    /// Affiche le menu contextuel natif d'un item du bandeau (Modifier / Supprimer)
+    pub fn show_item_context_menu(hwnd: windows_sys::Win32::Foundation::HWND, item_name: &str) -> usize {
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+        use windows_sys::Win32::Foundation::POINT;
+        unsafe {
+            let menu = CreatePopupMenu();
+            if menu.is_null() {
+                return 0;
+            }
+
+            let edit_text = to_wide_null("✏️ Modifier");
+            let delete_text = to_wide_null("🗑️ Supprimer");
+
+            AppendMenuW(menu, MF_STRING, IDM_ITEM_EDIT, edit_text.as_ptr());
+            AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+            AppendMenuW(menu, MF_STRING, IDM_ITEM_DELETE, delete_text.as_ptr());
+
+            let mut pt = POINT { x: 0, y: 0 };
+            GetCursorPos(&mut pt);
+
+            let prev_foreground = GetForegroundWindow();
+            if !hwnd.is_null() {
+                SetForegroundWindow(hwnd);
+            }
+
+            let cmd_selected = TrackPopupMenuEx(
+                menu,
+                TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                pt.x,
+                pt.y,
+                hwnd,
+                std::ptr::null(),
+            ) as usize;
+
+            if !hwnd.is_null() {
+                PostMessageW(hwnd, WM_NULL, 0, 0);
+            }
+            DestroyMenu(menu);
+
+            cmd_selected
+        }
+    }
+
+    /// Défragmente le tas mémoire et restitue les pages physiques inutilisées à Windows sans toucher aux buffers GDI
+    pub fn trim_process_memory() {
+        unsafe {
+            let heap = windows_sys::Win32::System::Memory::GetProcessHeap();
+            if !heap.is_null() {
+                windows_sys::Win32::System::Memory::HeapCompact(heap, 0);
+            }
         }
     }
 }
@@ -733,16 +1737,33 @@ pub mod win32 {
 pub mod win32 {
     use super::*;
     pub static BAR_EXPLICITLY_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    pub fn setup_bar_window_styles(_hwnd: *mut std::ffi::c_void, _stay_on_top: bool) {}
+    pub fn setup_bar_window_styles(_hwnd: *mut std::ffi::c_void, _stay_on_top: bool, _floating: bool) {}
     pub fn position_bar_window(_hwnd: *mut std::ffi::c_void, _pos: &str, _h: i32, _x: i32, _y: i32, _w: i32, _exp: bool, _stay: bool) {}
-    pub fn bring_to_foreground(_hwnd: *mut std::ffi::c_void) {}
+    pub fn bring_to_foreground(_hwnd: *mut std::ffi::c_void, _stay_on_top: bool) {}
+    pub fn set_desktop_parent(_hwnd: *mut std::ffi::c_void, _enabled: bool) {}
+    pub fn is_bar_window_visible() -> bool { true }
+    pub fn is_bar_window_foreground() -> bool { false }
     pub fn register_hotkey_combo(_hwnd: *mut std::ffi::c_void, _id: i32, _mods: &[String], _key: &str) -> bool { true }
     pub fn unregister_hotkey_id(_hwnd: *mut std::ffi::c_void, _id: i32) {}
     pub fn create_tray_icon(_hwnd: *mut std::ffi::c_void, _tip: &str) -> bool { true }
+    pub fn pick_color_dialog(_initial_hex: &str) -> Option<String> { None }
+    pub fn pick_color_eyedropper() -> Option<String> { None }
     pub fn remove_tray_icon(_hwnd: *mut std::ffi::c_void) {}
     pub fn show_tray_context_menu(_hwnd: *mut std::ffi::c_void, _is_auto: bool) {}
     pub fn set_autostart(_enabled: bool) -> Result<(), String> { Ok(()) }
     pub fn extract_and_cache_icon(_target: &str, _cache: &Path) -> Option<PathBuf> { None }
     pub fn to_wide_null(_s: &str) -> Vec<u16> { Vec::new() }
     pub fn find_bar_hwnd() -> *mut std::ffi::c_void { std::ptr::null_mut() }
+    pub fn setup_settings_window_styles(_hwnd: *mut std::ffi::c_void) {}
+    pub fn set_drop_callback<F>(_cb: F) where F: Fn(Vec<String>, i32, i32, bool) + Send + Sync + 'static {}
+    pub fn pick_file_dialog(_title: Option<&str>, _filter_desc: Option<&str>, _filter_exts: Option<&[&str]>) -> Option<PathBuf> { None }
+    pub const IDM_ITEM_EDIT: usize = 1;
+    pub const IDM_ITEM_DELETE: usize = 2;
+    pub fn open_target(_target: &str, _args: &str) -> bool { true }
+    pub fn open_path_or_url(_target: &str) -> bool { true }
+    pub fn show_item_context_menu(_hwnd: *mut std::ffi::c_void, _item_name: &str) -> usize { 0 }
+    pub fn trim_process_memory() {}
+    pub fn resolve_lnk_target(_lnk: &str) -> Option<(PathBuf, String)> { None }
+    pub fn resolve_lnk_target_full(_lnk: &str) -> Option<(PathBuf, String, PathBuf)> { None }
+    pub fn get_target_working_directory(_target: &str) -> Option<PathBuf> { None }
 }
