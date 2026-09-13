@@ -1648,6 +1648,10 @@ pub mod win32 {
             return false;
         }
 
+        // Si le chemin est un dossier local ou un partage réseau UNC, explorer.exe est le gestionnaire naturel
+        let is_dir = Path::new(clean).is_dir()
+            || (clean.starts_with(r"\\") && !clean.to_lowercase().ends_with(".exe") && !clean.to_lowercase().ends_with(".lnk"));
+
         let target_wide = to_wide_null(clean);
         let operation = to_wide_null("open");
 
@@ -1658,10 +1662,15 @@ pub mod win32 {
             None
         };
 
-        let working_dir = get_target_working_directory(clean);
+        // Si c'est un dossier, on ne définit pas de working_dir redondant pour éviter des blocages dans ShellExecuteW
+        let working_dir = if is_dir {
+            None
+        } else {
+            get_target_working_directory(clean)
+        };
         let dir_wide = working_dir.as_ref().map(|d| to_wide_null(&d.to_string_lossy()));
 
-        unsafe {
+        let success = unsafe {
             let res = windows_sys::Win32::UI::Shell::ShellExecuteW(
                 std::ptr::null_mut(),
                 operation.as_ptr(),
@@ -1671,7 +1680,20 @@ pub mod win32 {
                 windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL as i32,
             );
             (res as isize) > 32
+        };
+
+        if success {
+            return true;
         }
+
+        // Repli spécial pour dossiers ou chemins UNC si ShellExecuteW n'a pas pu ouvrir
+        if is_dir {
+            if std::process::Command::new("explorer").arg(clean).spawn().is_ok() {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Ouvre un fichier, dossier, application ou URL avec le programme par défaut de Windows
