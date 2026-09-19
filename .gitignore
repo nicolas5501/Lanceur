@@ -2,6 +2,7 @@
 /target/
 *.exe
 *.pdb
+*.log
 
 # Rust & Backups
 **/*.rs.bk

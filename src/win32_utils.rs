@@ -845,6 +845,14 @@ pub mod win32 {
         }
     }
 
+    /// Rehausse la priorité du processus pour accélérer son initialisation face aux charges système au démarrage
+    pub fn boost_startup_priority() {
+        unsafe {
+            let process = GetCurrentProcess();
+            SetPriorityClass(process, ABOVE_NORMAL_PRIORITY_CLASS);
+        }
+    }
+
     /// Basculer l'option de démarrage automatique avec Windows
     pub fn set_autostart(enabled: bool) -> Result<(), String> {
         unsafe {
@@ -874,6 +882,37 @@ pub mod win32 {
                         exe_wide.as_ptr() as *const u8,
                         (exe_wide.len() * 2) as u32,
                     );
+                }
+
+                // Accélération Windows Startup : désactiver le délai de démarrage artificiel (Startup Delay)
+                // de Windows Explorer (qui impose par défaut 5 à 15s d'attente aux programmes de la clé Run).
+                // Cette clé dans HKCU ne nécessite AUCUN droit administrateur.
+                let serialize_path = to_wide_null("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize");
+                let mut hkey_serialize: HKEY = std::ptr::null_mut();
+                let mut disposition: u32 = 0;
+                let res_ser = RegCreateKeyExW(
+                    HKEY_CURRENT_USER,
+                    serialize_path.as_ptr(),
+                    0,
+                    std::ptr::null_mut(),
+                    0,
+                    KEY_ALL_ACCESS,
+                    std::ptr::null(),
+                    &mut hkey_serialize,
+                    &mut disposition,
+                );
+                if res_ser == 0 && !hkey_serialize.is_null() {
+                    let delay_name = to_wide_null("StartupDelayInMSec");
+                    let delay_val: u32 = 0;
+                    RegSetValueExW(
+                        hkey_serialize,
+                        delay_name.as_ptr(),
+                        0,
+                        REG_DWORD,
+                        &delay_val as *const u32 as *const u8,
+                        std::mem::size_of::<u32>() as u32,
+                    );
+                    RegCloseKey(hkey_serialize);
                 }
             } else {
                 RegDeleteValueW(hkey, app_name.as_ptr());
@@ -1772,6 +1811,7 @@ pub mod win32 {
     pub fn pick_color_eyedropper() -> Option<String> { None }
     pub fn remove_tray_icon(_hwnd: *mut std::ffi::c_void) {}
     pub fn show_tray_context_menu(_hwnd: *mut std::ffi::c_void, _is_auto: bool) {}
+    pub fn boost_startup_priority() {}
     pub fn set_autostart(_enabled: bool) -> Result<(), String> { Ok(()) }
     pub fn extract_and_cache_icon(_target: &str, _cache: &Path) -> Option<PathBuf> { None }
     pub fn to_wide_null(_s: &str) -> Vec<u16> { Vec::new() }

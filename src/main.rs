@@ -928,6 +928,9 @@ fn register_all_hotkeys_for_app(hwnd: windows_sys::Win32::Foundation::HWND, cfg:
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    win32_utils::win32::boost_startup_priority();
+
     std::panic::set_hook(Box::new(|info| {
         let msg = format!("Erreur fatale (Panic) :\n{}", info);
         let _ = std::fs::write("crash.log", &msg);
@@ -946,6 +949,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
 
     let app_config = Arc::new(Mutex::new(load_config()));
+
+    // Si le démarrage automatique est activé, s'assurer que le lancement instantané
+    // (suppression du délai d'attente Windows Explorer) est configuré dans le registre utilisateur
+    #[cfg(windows)]
+    {
+        let cfg = app_config.lock().unwrap();
+        if cfg.settings.autostart {
+            let _ = win32_utils::win32::set_autostart(true);
+        }
+    }
+
     let selected_container_idx = Arc::new(AtomicUsize::new(0));
     // Démarrage initial visible
     let is_bar_visible = Arc::new(AtomicBool::new(true));
