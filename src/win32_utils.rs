@@ -1470,6 +1470,7 @@ pub mod win32 {
 
         let mut cc: CHOOSECOLORW = unsafe { std::mem::zeroed() };
         cc.l_struct_size = std::mem::size_of::<CHOOSECOLORW>() as u32;
+        cc.hwnd_owner = find_settings_hwnd();
         cc.rgb_result = initial_rgb;
         cc.lp_cust_colors = cust_colors.as_mut_ptr();
         cc.flags = 0x00000001 | 0x00000002; // CC_RGBINIT | CC_FULLOPEN
@@ -1518,17 +1519,24 @@ pub mod win32 {
                     let mut pt = POINT { x: 0, y: 0 };
                     GetCursorPos(&mut pt);
                     let hdc = GetDC(std::ptr::null_mut());
-                    if !hdc.is_null() {
+                    let res = if !hdc.is_null() {
                         let pixel = GetPixel(hdc, pt.x, pt.y);
                         ReleaseDC(std::ptr::null_mut(), hdc);
                         if pixel != 0xFFFFFFFF {
                             let r = (pixel & 0xFF) as u8;
                             let g = ((pixel >> 8) & 0xFF) as u8;
                             let b = ((pixel >> 16) & 0xFF) as u8;
-                            return Some(format!("#{:02x}{:02x}{:02x}", r, g, b));
+                            Some(format!("#{:02x}{:02x}{:02x}", r, g, b))
+                        } else {
+                            None
                         }
+                    } else {
+                        None
+                    };
+                    while (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(15));
                     }
-                    return None;
+                    return res;
                 }
 
                 std::thread::sleep(std::time::Duration::from_millis(15));
@@ -1609,6 +1617,7 @@ pub mod win32 {
 
         let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
         ofn.l_struct_size = std::mem::size_of::<OPENFILENAMEW>() as u32;
+        ofn.hwnd_owner = find_settings_hwnd();
         ofn.lpstr_filter = filter_utf16.as_ptr();
         ofn.n_filter_index = 1;
         ofn.lpstr_file = file_buf.as_mut_ptr();

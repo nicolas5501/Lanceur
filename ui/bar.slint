@@ -225,6 +225,7 @@ export component BarWindow inherits Window {
     callback container_width_changed(int, length);
     callback window_drag_started();
     callback window_dragged(length, length);
+    callback window_drag_ended();
     callback window_width_changed(length);
 
     // Zone tactile globale en arrière-plan pour fermer le menu déroulant lors du survol de l'espace transparent
@@ -270,8 +271,12 @@ export component BarWindow inherits Window {
                             root.active_dropdown_idx = -1;
                             root.dropdown_state_changed(false);
                         }
-                    } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
-                        root.open_context_menu();
+                    } else if event.kind == PointerEventKind.up {
+                        if root.bar_position == "Floating" && event.button == PointerEventButton.left {
+                            root.window_drag_ended();
+                        } else if event.button == PointerEventButton.right {
+                            root.open_context_menu();
+                        }
                     }
                 }
             }
@@ -309,6 +314,8 @@ export component BarWindow inherits Window {
                                         root.window_drag_started();
                                     } else if event.kind == PointerEventKind.move && self.pressed {
                                         root.window_dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                                    } else if event.kind == PointerEventKind.up {
+                                        root.window_drag_ended();
                                     }
                                 }
                             }

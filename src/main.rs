@@ -7,6 +7,7 @@ mod win32_utils;
 use config::*;
 use slint::{Color, ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -79,10 +80,9 @@ fn get_max_allowed_rows(cfg: &AppConfig) -> usize {
 
     let eff_bar_h = cfg.settings.bar_height.max(cfg.settings.icon_size + 14.0);
     let bar_h = (eff_bar_h as i32).max(16);
-    let max_by_screen = ((work_h / bar_h) as usize).max(1);
+    let max_by_screen = (((work_h * 3 / 4) / bar_h) as usize).max(1);
     let max_in_cfg = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0) + 1;
-    let max_explicit = cfg.settings.rows_count;
-    max_by_screen.max(max_in_cfg).max(max_explicit).max(1)
+    max_by_screen.max(max_in_cfg).max(1)
 }
 
 fn build_available_rows_list(cfg: &AppConfig) -> Vec<SharedString> {
@@ -730,6 +730,20 @@ fn apply_item_editor_to_config(sui: &SettingsWindow, cfg: &mut AppConfig, c_idx:
     }
 }
 
+pub(crate) fn parse_url_file_content(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let trimmed = line.trim().trim_start_matches('\u{feff}');
+        if let Some(idx) = trimmed.find('=')
+            && trimmed[..idx].trim().eq_ignore_ascii_case("URL") {
+                let clean_u = trimmed[idx + 1..].trim();
+                if !clean_u.is_empty() {
+                    return Some(clean_u.to_string());
+                }
+            }
+    }
+    None
+}
+
 fn create_launcher_item_from_path(file_path: &str) -> LauncherItem {
     let p = std::path::Path::new(file_path);
     let mut stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Nouvel Item".to_string());
@@ -741,19 +755,11 @@ fn create_launcher_item_from_path(file_path: &str) -> LauncherItem {
     let (real_target, real_args) = if let Some((target_path, args)) = win32_utils::win32::resolve_lnk_target(file_path) {
         (target_path.to_string_lossy().to_string(), args)
     } else if file_path.to_lowercase().ends_with(".url") && Path::new(file_path).exists() {
-        if let Ok(content) = std::fs::read_to_string(file_path) {
-            let mut found_url = None;
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if let Some(u) = trimmed.strip_prefix("URL=") {
-                    let clean_u = u.trim();
-                    if !clean_u.is_empty() {
-                        found_url = Some((clean_u.to_string(), String::new()));
-                        break;
-                    }
-                }
-            }
-            found_url.unwrap_or_else(|| (file_path.to_string(), String::new()))
+        if let Ok(bytes) = std::fs::read(file_path) {
+            let content = String::from_utf8_lossy(&bytes);
+            parse_url_file_content(&content)
+                .map(|u| (u, String::new()))
+                .unwrap_or_else(|| (file_path.to_string(), String::new()))
         } else {
             (file_path.to_string(), String::new())
         }
@@ -1571,8 +1577,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
 
+        let drag_save_timer = Rc::new(RefCell::new(slint::Timer::default()));
         let drag_origin_move = drag_origin.clone();
         let drag_config = app_config.clone();
+        let drag_timer_clone = drag_save_timer.clone();
         bar_window.on_window_dragged(move |dx, dy| {
             let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst)
                 as windows_sys::Win32::Foundation::HWND;
@@ -1580,22 +1588,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let new_x = x + dx as i32;
                 let new_y = y + dy as i32;
                 win32_utils::win32::move_bar_window_to(hwnd, new_x, new_y);
-                let mut cfg = drag_config.lock().unwrap();
-                cfg.settings.bar_x = new_x;
-                cfg.settings.bar_y = new_y;
-                save_config(&cfg);
+                {
+                    let mut cfg = drag_config.lock().unwrap();
+                    cfg.settings.bar_x = new_x;
+                    cfg.settings.bar_y = new_y;
+                }
+                let cfg_for_timer = drag_config.clone();
+                drag_timer_clone.borrow_mut().start(
+                    slint::TimerMode::SingleShot,
+                    std::time::Duration::from_millis(500),
+                    move || {
+                        let cfg = cfg_for_timer.lock().unwrap();
+                        save_config(&cfg);
+                    },
+                );
             }
         });
 
-        let resize_config = app_config.clone();
-        bar_window.on_window_width_changed(move |new_width| {
-            let mut cfg = resize_config.lock().unwrap();
-            cfg.settings.bar_width = (new_width as i32).max(260);
+        let drag_end_cfg = app_config.clone();
+        let drag_end_timer = drag_save_timer.clone();
+        bar_window.on_window_drag_ended(move || {
+            drag_end_timer.borrow_mut().stop();
+            let cfg = drag_end_cfg.lock().unwrap();
             save_config(&cfg);
+        });
+
+        let resize_save_timer = Rc::new(RefCell::new(slint::Timer::default()));
+        let resize_config = app_config.clone();
+        let resize_timer_clone = resize_save_timer.clone();
+        bar_window.on_window_width_changed(move |new_width| {
+            let total_h = {
+                let mut cfg = resize_config.lock().unwrap();
+                cfg.settings.bar_width = (new_width as i32).max(260);
+                get_total_bar_height(&cfg)
+            };
             let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst)
                 as windows_sys::Win32::Foundation::HWND;
             if !hwnd.is_null() {
-                let total_h = get_total_bar_height(&cfg);
+                let cfg = resize_config.lock().unwrap();
                 win32_utils::win32::position_bar_window(
                     hwnd,
                     &cfg.settings.bar_position,
@@ -1607,6 +1637,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cfg.settings.stay_on_top,
                 );
             }
+            let cfg_for_timer = resize_config.clone();
+            resize_timer_clone.borrow_mut().start(
+                slint::TimerMode::SingleShot,
+                std::time::Duration::from_millis(350),
+                move || {
+                    let cfg = cfg_for_timer.lock().unwrap();
+                    save_config(&cfg);
+                },
+            );
         });
     }
 
@@ -1655,17 +1694,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let app_cfg_clone = app_config.clone();
         let bar_weak = bar_window.as_weak();
+        let cont_resize_timer = Rc::new(RefCell::new(slint::Timer::default()));
+        let cont_timer_clone = cont_resize_timer.clone();
         bar_window.on_container_width_changed(move |idx, new_width| {
             if idx >= 0 {
                 let i = idx as usize;
-                let mut cfg = app_cfg_clone.lock().unwrap();
-                if let Some(cont) = cfg.containers.get_mut(i) {
-                    cont.width = new_width;
-                    save_config(&cfg);
-                    if let Some(bui) = bar_weak.upgrade() {
-                        refresh_bar_ui(&bui, &cfg);
+                {
+                    let mut cfg = app_cfg_clone.lock().unwrap();
+                    if let Some(cont) = cfg.containers.get_mut(i) {
+                        cont.width = new_width;
+                        if let Some(bui) = bar_weak.upgrade() {
+                            refresh_bar_ui(&bui, &cfg);
+                        }
+                    } else {
+                        return;
                     }
                 }
+                let cfg_for_timer = app_cfg_clone.clone();
+                cont_timer_clone.borrow_mut().start(
+                    slint::TimerMode::SingleShot,
+                    std::time::Duration::from_millis(350),
+                    move || {
+                        let cfg = cfg_for_timer.lock().unwrap();
+                        save_config(&cfg);
+                    },
+                );
             }
         });
     }
@@ -1863,6 +1916,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut cfg = cfg_arc.lock().unwrap();
                 let max_row = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0);
                 let current_rows = (max_row + 1).max(cfg.settings.rows_count).max(1);
+                if current_rows >= get_max_allowed_rows(&cfg) {
+                    return;
+                }
                 let new_row_count = current_rows + 1;
                 cfg.settings.rows_count = new_row_count;
                 save_config(&cfg);
@@ -3171,4 +3227,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Cela permet d'utiliser SW_HIDE librement sans risquer de terminer l'appli.
     slint::run_event_loop()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod main_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_url_file_content_various_cases() {
+        let sample_standard = "[InternetShortcut]\r\nURL=https://www.google.com\r\n";
+        assert_eq!(parse_url_file_content(sample_standard), Some("https://www.google.com".to_string()));
+
+        let sample_lower = "[InternetShortcut]\nurl=https://github.com/test\n";
+        assert_eq!(parse_url_file_content(sample_lower), Some("https://github.com/test".to_string()));
+
+        let sample_spaces = "[InternetShortcut]\n  Url  =   https://crates.io  \n";
+        assert_eq!(parse_url_file_content(sample_spaces), Some("https://crates.io".to_string()));
+
+        let sample_bom = "\u{feff}[InternetShortcut]\nURL=https://bom-site.org";
+        assert_eq!(parse_url_file_content(sample_bom), Some("https://bom-site.org".to_string()));
+
+        let sample_invalid = "[InternetShortcut]\nIconIndex=0\n";
+        assert_eq!(parse_url_file_content(sample_invalid), None);
+    }
+
+    #[test]
+    fn test_parse_hex_color() {
+        let fallback = Color::from_argb_u8(255, 0, 0, 0);
+
+        let c3 = parse_hex_color("#fff", fallback);
+        assert_eq!(c3, Color::from_argb_u8(255, 255, 255, 255));
+
+        let c6 = parse_hex_color("#1e293b", fallback);
+        assert_eq!(c6, Color::from_argb_u8(255, 0x1e, 0x29, 0x3b));
+
+        let c8 = parse_hex_color("#1e293bff", fallback);
+        assert_eq!(c8, Color::from_argb_u8(255, 0x1e, 0x29, 0x3b));
+
+        let cinvalid = parse_hex_color("not_a_color", fallback);
+        assert_eq!(cinvalid, fallback);
+    }
 }
