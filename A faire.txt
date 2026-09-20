@@ -1,0 +1,8 @@
+Les icones des items ne sont pas récupéré depuis l'icone de l'appli visée via drag and drop ou déclaration manuelle
+champ icones des containeurs on ne comprend pas comment fonctionne la zone
+On doit pouvoir extraire l'icone d'un exe pour l'associé à un objet
+Idem pour les icones des items
+La saisie du nom d'un containeur s'arrete à chaque caractère saisie
+Dans les paramètres créer 4 zones, une par objet ; faciliter le déplacement des objets et leur hiérarchie
+Les textes accompagnant les champs des paramètres méritent une info bulle les expliquant et indiquant un exemple de ce qu'il faut saisir dedans
+l'icone de suppression est représenté par un carré rouge ; remplacer par icone poubelle
