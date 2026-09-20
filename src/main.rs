@@ -1055,77 +1055,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // afin de ne pas interrompre la boucle d'événements Slint.
     let _ = bar_window.show();
 
-    // Timer d'initialisation Win32 : se déclenche sur le premier tick de l'event loop,
-    // moment où le HWND natif est garanti d'exister.
+    // Initialisation immédiate de la fenêtre Win32, ou repli sur le premier tick si HWND pas encore prêt
     #[cfg(windows)]
     {
-        let cfg_init = app_config.clone();
-        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
-            use std::sync::atomic::Ordering;
+        let apply_bar = |hwnd: windows_sys::Win32::Foundation::HWND, cfg: &AppConfig| {
+            win32_utils::win32::BAR_HWND.store(hwnd as usize, Ordering::SeqCst);
+            win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(false, Ordering::SeqCst);
 
-            let apply = |hwnd: windows_sys::Win32::Foundation::HWND| {
-                win32_utils::win32::BAR_HWND.store(hwnd as usize, Ordering::SeqCst);
-                win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(false, Ordering::SeqCst);
+            let total_h = get_total_bar_height(cfg);
+            win32_utils::win32::set_desktop_parent(hwnd, cfg.settings.stay_on_top);
+            win32_utils::win32::setup_bar_window_styles(
+                hwnd,
+                cfg.settings.stay_on_top,
+                cfg.settings.bar_position == "Floating",
+            );
 
+            // Positionner au top pleine largeur et afficher sans voler le focus
+            win32_utils::win32::position_bar_window(
+                hwnd,
+                &cfg.settings.bar_position,
+                total_h,
+                cfg.settings.bar_x,
+                cfg.settings.bar_y,
+                cfg.settings.bar_width,
+                false,
+                cfg.settings.stay_on_top,
+            );
+
+            win32_utils::win32::bring_to_foreground(hwnd, cfg.settings.stay_on_top);
+        };
+
+        let hwnd = win32_utils::win32::find_bar_hwnd();
+        if !hwnd.is_null() {
+            let cfg = app_config.lock().unwrap();
+            apply_bar(hwnd, &cfg);
+        } else {
+            let cfg_init = app_config.clone();
+            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                let hwnd = win32_utils::win32::find_bar_hwnd();
+                if hwnd.is_null() {
+                    let cfg_retry = cfg_init.clone();
+                    slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+                        let hwnd2 = win32_utils::win32::find_bar_hwnd();
+                        if hwnd2.is_null() { return; }
+                        let cfg = cfg_retry.lock().unwrap();
+                        apply_bar(hwnd2, &cfg);
+                    });
+                    return;
+                }
                 let cfg = cfg_init.lock().unwrap();
-                let total_h = get_total_bar_height(&cfg);
-                win32_utils::win32::set_desktop_parent(hwnd, cfg.settings.stay_on_top);
-                win32_utils::win32::setup_bar_window_styles(
-                    hwnd,
-                    cfg.settings.stay_on_top,
-                    cfg.settings.bar_position == "Floating",
-                );
-
-                // Positionner au top pleine largeur et afficher sans voler le focus
-                win32_utils::win32::position_bar_window(
-                    hwnd,
-                    &cfg.settings.bar_position,
-                    total_h,
-                    cfg.settings.bar_x,
-                    cfg.settings.bar_y,
-                    cfg.settings.bar_width,
-                    false,
-                    cfg.settings.stay_on_top,
-                );
-
-                win32_utils::win32::bring_to_foreground(hwnd, cfg.settings.stay_on_top);
-            };
-
-            let hwnd = win32_utils::win32::find_bar_hwnd();
-            if hwnd.is_null() {
-                // HWND pas encore créé (rare) → relancer dans 50ms
-                let cfg_retry = cfg_init.clone();
-                slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
-                    use std::sync::atomic::Ordering;
-                    let hwnd2 = win32_utils::win32::find_bar_hwnd();
-                    if hwnd2.is_null() { return; }
-                    win32_utils::win32::BAR_HWND.store(hwnd2 as usize, Ordering::SeqCst);
-                    win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(false, Ordering::SeqCst);
-                    let cfg = cfg_retry.lock().unwrap();
-                    let total_h = get_total_bar_height(&cfg);
-                    win32_utils::win32::set_desktop_parent(hwnd2, cfg.settings.stay_on_top);
-                    win32_utils::win32::setup_bar_window_styles(
-                        hwnd2,
-                        cfg.settings.stay_on_top,
-                        cfg.settings.bar_position == "Floating",
-                    );
-                    win32_utils::win32::position_bar_window(
-                        hwnd2,
-                        &cfg.settings.bar_position,
-                        total_h,
-                        cfg.settings.bar_x,
-                        cfg.settings.bar_y,
-                        cfg.settings.bar_width,
-                        false,
-                        cfg.settings.stay_on_top,
-                    );
-                    win32_utils::win32::bring_to_foreground(hwnd2, cfg.settings.stay_on_top);
-                });
-                return;
-            }
-
-            apply(hwnd);
-        });
+                apply_bar(hwnd, &cfg);
+            });
+        }
     }
 
     #[cfg(windows)]

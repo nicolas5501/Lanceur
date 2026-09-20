@@ -13,6 +13,7 @@ pub mod win32 {
     use windows_sys::Win32::Graphics::Gdi::*;
     use windows_sys::Win32::System::Ole::*;
     use windows_sys::Win32::System::Registry::*;
+    use windows_sys::Win32::System::LibraryLoader::*;
     use windows_sys::Win32::System::Threading::*;
     use windows_sys::Win32::UI::Controls::*;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
@@ -271,6 +272,17 @@ pub mod win32 {
         unsafe {
             RemoveWindowSubclass(hwnd, Some(settings_wnd_proc_hook), 102);
             SetWindowSubclass(hwnd, Some(settings_wnd_proc_hook), 102, 0);
+
+            // Supprimer le pinceau de fond blanc par défaut et activer le mode sombre immersif DWM
+            SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, 0);
+            let dark: i32 = 1;
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+                &dark as *const _ as *const _,
+                std::mem::size_of::<i32>() as u32,
+            );
+
             let _ = RevokeDragDrop(hwnd);
             DragAcceptFiles(hwnd, 1);
             ChangeWindowMessageFilter(WM_DROPFILES, 1);
@@ -290,28 +302,43 @@ pub mod win32 {
             RemoveWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101);
             SetWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101, 0);
 
-            // 2. Styles étendus : ToolWindow + NoActivate, JAMAIS de WS_EX_TOPMOST pour ne jamais écraser les applications actives
-            let mut ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
-            ex_style |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+            // 2. Supprimer le pinceau de fond blanc par défaut de la classe de fenêtre
+            SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, 0);
+
+            // 3. Activer le mode sombre immersif DWM pour éliminer les flashs clairs du compositeur
+            let dark: i32 = 1;
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+                &dark as *const _ as *const _,
+                std::mem::size_of::<i32>() as u32,
+            );
+
+            // 4. Styles étendus : ToolWindow + NoActivate, JAMAIS de WS_EX_TOPMOST pour ne jamais écraser les applications actives
+            let cur_ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            let mut ex_style = cur_ex | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
             ex_style &= !WS_EX_APPWINDOW;
             ex_style &= !WS_EX_TOPMOST;
-            SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style as i32);
+            if cur_ex != ex_style {
+                SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style as i32);
+            }
 
-            // 3. Styles standard : TOUJOURS WS_POPUP (jamais WS_CHILD) pour préserver le moteur de rendu Direct3D/Slint et les menus déroulants
-            let mut style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-            style &= !(WS_CAPTION | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME | WS_CHILD);
+            // 5. Styles standard : TOUJOURS WS_POPUP (jamais WS_CHILD) pour préserver le moteur de rendu et les popovers
+            let cur_style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+            let mut style = cur_style & !(WS_CAPTION | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME | WS_CHILD);
             style |= WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VISIBLE;
-            SetWindowLongW(hwnd, GWL_STYLE, style as i32);
-
-            SetWindowPos(
-                hwnd,
-                HWND_NOTOPMOST,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            );
+            if cur_style != style {
+                SetWindowLongW(hwnd, GWL_STYLE, style as i32);
+                SetWindowPos(
+                    hwnd,
+                    HWND_NOTOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+            }
 
             // Activer la réception du Drag & Drop et débloquer les filtres UIPI
             let _ = RevokeDragDrop(hwnd);
@@ -429,7 +456,7 @@ pub mod win32 {
                 0,
                 0,
                 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
             BringWindowToTop(hwnd);
             SetForegroundWindow(hwnd);
@@ -442,7 +469,7 @@ pub mod win32 {
                 0,
                 0,
                 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
 
             if attached {
@@ -644,8 +671,9 @@ pub mod win32 {
                 h,
                 SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
-            InvalidateRect(hwnd, std::ptr::null(), 1);
-            UpdateWindow(hwnd);
+            // Invalider sans effacer le fond (bErase = 0) et sans forcer de UpdateWindow synchrone
+            // qui peignait en blanc avant que Slint n'ait terminé son rendu logiciel
+            InvalidateRect(hwnd, std::ptr::null(), 0);
         }
     }
 
@@ -785,7 +813,10 @@ pub mod win32 {
             nid.uID = 1;
             nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
             nid.uCallbackMessage = WM_APP_TRAY;
-            nid.hIcon = LoadIconW(std::ptr::null_mut(), IDI_APPLICATION);
+            // Charge l'icône de l'exe (resource ID 1, embarquée par winres/build.rs)
+            let hinstance = GetModuleHandleW(std::ptr::null());
+            let app_icon = LoadIconW(hinstance, 1 as *const u16);
+            nid.hIcon = if !app_icon.is_null() { app_icon } else { LoadIconW(std::ptr::null_mut(), IDI_APPLICATION) };
 
             let tip_wide = to_wide_null(tooltip);
             let copy_len = tip_wide.len().min(nid.szTip.len() - 1);
