@@ -17,13 +17,6 @@ fn trim_process_memory() {
     win32_utils::win32::trim_process_memory();
 }
 
-fn log_trace(msg: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("trace_crash.log") {
-        let _ = writeln!(f, "[{}] {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(), msg);
-        let _ = f.flush();
-    }
-}
 
 fn parse_hex_color(hex_str: &str, default: Color) -> Color {
     let s = hex_str.trim().trim_start_matches('#');
@@ -703,7 +696,9 @@ fn apply_item_editor_to_config(sui: &SettingsWindow, cfg: &mut AppConfig, c_idx:
             itm.hotkey_modifiers = mods;
             itm.hotkey_key = hotkey_key;
             itm.column = col;
-            cfg.containers[target_cont_idx].items.push(itm);
+            if let Some(target_cont) = cfg.containers.get_mut(target_cont_idx) {
+                target_cont.items.push(itm);
+            }
         } else if let Some(cont) = cfg.containers.get_mut(target_cont_idx) {
             if item_idx >= 0 && (item_idx as usize) < cont.items.len() && target_cont_idx == c_idx {
                 let itm = &mut cont.items[item_idx as usize];
@@ -833,10 +828,6 @@ fn add_dropped_files_to_container(files: &[String], target_cont_idx: usize, conf
     save_config(&cfg);
 }
 
-fn add_dropped_file_to_container(file_path: &str, target_cont_idx: usize, config_arc: &Arc<Mutex<AppConfig>>) {
-    add_dropped_files_to_container(&[file_path.to_string()], target_cont_idx, config_arc);
-}
-
 fn find_container_at_coordinates(cfg: &AppConfig, x: i32, y: i32, bar_total_width: f32, bar_total_height: f32) -> usize {
     if cfg.containers.is_empty() {
         return 0;
@@ -940,12 +931,13 @@ fn register_all_hotkeys_for_app(hwnd: windows_sys::Win32::Foundation::HWND, cfg:
 
     // 1. Raccourci Global Principal
     let main_id = win32_utils::win32::MAIN_HOTKEY_ID;
-    if win32_utils::win32::register_hotkey_combo(
-        hwnd,
-        main_id,
-        &cfg.settings.hotkey_modifiers,
-        &cfg.settings.hotkey_key,
-    ) {
+    if !cfg.settings.hotkey_key.trim().is_empty()
+        && win32_utils::win32::register_hotkey_combo(
+            hwnd,
+            main_id,
+            &cfg.settings.hotkey_modifiers,
+            &cfg.settings.hotkey_key,
+        ) {
         newly_registered.push(main_id);
     }
 
@@ -1176,10 +1168,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     WM_DROPFILES => {
                         let (files, _) = unsafe { win32_utils::win32::extract_dropped_files(wparam as windows_sys::Win32::UI::Shell::HDROP) };
-                        for path in files {
+                        if !files.is_empty() {
                             TRAY_HANDLER.with(|th| {
                                 if let Some(handler) = th.borrow().as_ref() {
-                                    (handler.on_drop_file)(path);
+                                    (handler.on_drop_files)(files);
                                 }
                             });
                         }
@@ -1223,7 +1215,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 show_menu: Box<dyn Fn(HWND) + Send>,
                 handle_menu_cmd: Box<dyn Fn(usize) + Send>,
                 on_hotkey: Box<dyn Fn(i32) + Send>,
-                on_drop_file: Box<dyn Fn(String) + Send>,
+                on_drop_files: Box<dyn Fn(Vec<String>) + Send>,
             }
 
             thread_local! {
@@ -1427,14 +1419,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let sw_for_drop = settings_weak.clone();
                 let sel_for_drop = sel_idx_clone.clone();
 
-                let on_drop_file = Box::new(move |file_path: String| {
+                let on_drop_files = Box::new(move |files: Vec<String>| {
                     let cfg_arc = cfg_for_drop.clone();
                     let bw = bw_for_drop.clone();
                     let sw = sw_for_drop.clone();
                     let sel = sel_for_drop.clone();
 
                     let _ = slint::invoke_from_event_loop(move || {
-                        add_dropped_file_to_container(&file_path, 0, &cfg_arc);
+                        add_dropped_files_to_container(&files, 0, &cfg_arc);
                         let cfg_guard = cfg_arc.lock().unwrap();
                         if let Some(bui) = bw.upgrade() {
                             refresh_bar_ui(&bui, &cfg_guard);
@@ -1452,7 +1444,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         show_menu,
                         handle_menu_cmd,
                         on_hotkey,
-                        on_drop_file,
+                        on_drop_files,
                     });
                 });
 
@@ -1731,7 +1723,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         bar_window.on_item_right_clicked(move |item_id_slint| {
             let item_id = item_id_slint.to_string();
-            log_trace(&format!("on_item_right_clicked: item_id={}", item_id));
             let b_weak = bar_weak.clone();
             let s_weak = settings_weak.clone();
             let c_arc = cfg_arc.clone();
@@ -1739,7 +1730,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let b_fn = bring_fn;
 
             slint::Timer::single_shot(std::time::Duration::from_millis(20), move || {
-                log_trace("Timer fired");
                 let item_info = {
                     let cfg = c_arc.lock().unwrap();
                     let mut found = None;
@@ -1758,22 +1748,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let (cont_idx, item_idx, itm_name) = match item_info {
                     Some(val) => val,
                     None => {
-                        log_trace("Item not found");
                         return;
                     }
                 };
-                log_trace(&format!("Item found: {}", itm_name));
 
                 #[cfg(windows)]
                 {
                     use windows_sys::Win32::Foundation::HWND;
                     let hwnd = win32_utils::win32::find_bar_hwnd();
-                    log_trace(&format!("Calling show_item_context_menu, hwnd={:?}", hwnd));
                     let action = win32_utils::win32::show_item_context_menu(hwnd, &itm_name);
-                    log_trace(&format!("show_item_context_menu returned: {}", action));
                     match action {
                         win32_utils::win32::IDM_ITEM_EDIT => {
-                            log_trace("Action: EDIT");
                             if let Some(bui) = b_weak.upgrade() {
                                 bui.set_active_dropdown_idx(-1);
                                 bui.invoke_dropdown_state_changed(false);
@@ -1792,13 +1777,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         win32_utils::win32::IDM_ITEM_DELETE => {
-                            log_trace("Action: DELETE");
                             // 1. Fermer le menu déroulant du bandeau
                             if let Some(bui) = b_weak.upgrade() {
                                 bui.set_active_dropdown_idx(-1);
                                 bui.invoke_dropdown_state_changed(false);
                             }
-                            log_trace("Dropdown closed");
 
                             // 2. Suppression directe sans MessageBox modale
                             let mut cfg = c_arc.lock().unwrap();
@@ -1810,11 +1793,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     break;
                                 }
                             }
-                            log_trace(&format!("Removed from config: {}", removed));
                             if removed {
                                 save_config(&cfg);
                                 refresh_hotkeys_for_app(&cfg);
-                                log_trace("Config saved");
                                 let b_clone = b_weak.clone();
                                 let s_clone = s_weak.clone();
                                 let s_idx_clone = s_idx.clone();
@@ -1823,23 +1804,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // Rafraîchir les UI sur le tick suivant une fois le popover fermé
                                 slint::Timer::single_shot(std::time::Duration::from_millis(15), move || {
                                     if let Some(bui) = b_clone.upgrade() {
-                                        log_trace("Refreshing bar_ui");
                                         refresh_bar_ui(&bui, &cfg_clone);
-                                        log_trace("Bar_ui refreshed");
                                     }
                                     if let Some(sui) = s_clone.upgrade() {
                                         let cur_sel = s_idx_clone.load(Ordering::SeqCst);
-                                        log_trace("Refreshing settings_ui");
                                         refresh_settings_ui(&sui, &cfg_clone, cur_sel);
-                                        log_trace("Settings_ui refreshed");
                                     }
                                 });
                             }
-                            log_trace("DELETE finished");
                         }
-                        _ => {
-                            log_trace("Action: Cancelled or other");
-                        }
+                        _ => {}
                     }
                 }
             });
@@ -3177,11 +3151,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 && bui.get_active_dropdown_idx() >= 0 {
                     bui.set_anim_pulse(!bui.get_anim_pulse());
                 }
-            if let Some(sui) = sw.upgrade() {
+            #[cfg(windows)]
+            let s_visible = {
+                let hwnd = win32_utils::win32::find_settings_hwnd();
+                !hwnd.is_null() && unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd) != 0 }
+            };
+            #[cfg(not(windows))]
+            let s_visible = true;
+
+            if s_visible && let Some(sui) = sw.upgrade() {
                 sui.set_preview_anim_pulse(!sui.get_preview_anim_pulse());
-                let txt = sui.get_pref_dropdown_hover_color();
-                let col = parse_hex_color(&txt, Color::from_argb_u8(255, 37, 99, 235));
-                sui.set_pref_dropdown_hover_color_val(col);
             }
         });
         std::mem::forget(pulse_timer);

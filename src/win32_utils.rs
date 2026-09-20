@@ -21,6 +21,7 @@ pub mod win32 {
 
     pub static SYSTRAY_HWND: AtomicUsize = AtomicUsize::new(0);
     pub static BAR_HWND: AtomicUsize = AtomicUsize::new(0);
+    pub static SETTINGS_HWND: AtomicUsize = AtomicUsize::new(0);
     pub static APP_RUNNING: AtomicBool = AtomicBool::new(true);
     pub static AUTOSTART_ENABLED: AtomicBool = AtomicBool::new(false);
     pub static STAY_ON_TOP_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -81,8 +82,13 @@ pub mod win32 {
         found_hwnd
     }
 
-    /// Recherche fiable du HWND de la fenêtre des Paramètres
+    /// Recherche fiable du HWND de la fenêtre des Paramètres avec mise en cache
     pub fn find_settings_hwnd() -> HWND {
+        let cached = SETTINGS_HWND.load(Ordering::SeqCst) as HWND;
+        if !cached.is_null() && unsafe { IsWindow(cached) } != 0 {
+            return cached;
+        }
+
         unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
             let mut process_id: u32 = 0;
             unsafe { GetWindowThreadProcessId(hwnd, &mut process_id); }
@@ -102,6 +108,9 @@ pub mod win32 {
         let mut found_hwnd: HWND = std::ptr::null_mut();
         unsafe {
             EnumWindows(Some(enum_proc), &mut found_hwnd as *mut _ as LPARAM);
+        }
+        if !found_hwnd.is_null() {
+            SETTINGS_HWND.store(found_hwnd as usize, Ordering::SeqCst);
         }
         found_hwnd
     }
@@ -225,7 +234,7 @@ pub mod win32 {
         unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
     }
 
-    /// Subclass Window Procedure pour la fenêtre des Paramètres (gestion du Drag & Drop)
+    /// Subclass Window Procedure pour la fenêtre des Paramètres (gestion du Drag & Drop et destruction)
     unsafe extern "system" fn settings_wnd_proc_hook(
         hwnd: HWND,
         msg: u32,
@@ -234,6 +243,13 @@ pub mod win32 {
         _uid_subclass: usize,
         _ref_data: usize,
     ) -> LRESULT {
+        if msg == WM_NCDESTROY {
+            unsafe {
+                RemoveWindowSubclass(hwnd, Some(settings_wnd_proc_hook), 102);
+            }
+            SETTINGS_HWND.store(0, Ordering::SeqCst);
+            return 0;
+        }
         if msg == WM_DROPFILES {
             let (files, pt) = unsafe { extract_dropped_files(wparam as HDROP) };
             if !files.is_empty()
@@ -251,6 +267,7 @@ pub mod win32 {
         if hwnd.is_null() {
             return;
         }
+        SETTINGS_HWND.store(hwnd as usize, Ordering::SeqCst);
         unsafe {
             RemoveWindowSubclass(hwnd, Some(settings_wnd_proc_hook), 102);
             SetWindowSubclass(hwnd, Some(settings_wnd_proc_hook), 102, 0);
@@ -647,6 +664,10 @@ pub mod win32 {
         if hwnd.is_null() || key.trim().is_empty() {
             return false;
         }
+        let vk = parse_virtual_key(key);
+        if vk == 0 {
+            return false;
+        }
         unsafe {
             UnregisterHotKey(hwnd, id);
 
@@ -661,7 +682,6 @@ pub mod win32 {
                 }
             }
 
-            let vk = parse_virtual_key(key);
             RegisterHotKey(hwnd, id, mod_flags, vk) != 0
         }
     }
@@ -675,7 +695,11 @@ pub mod win32 {
     }
 
     pub(crate) fn parse_virtual_key(key: &str) -> u32 {
-        match key.to_uppercase().as_str() {
+        let trimmed = key.trim();
+        if trimmed.is_empty() {
+            return 0;
+        }
+        match trimmed.to_uppercase().as_str() {
             "SPACE" => VK_SPACE as u32,
             "RETURN" | "ENTER" => VK_RETURN as u32,
             "TAB" => VK_TAB as u32,
@@ -707,10 +731,12 @@ pub mod win32 {
             "NUMPAD8" => VK_NUMPAD8 as u32,
             "NUMPAD9" => VK_NUMPAD9 as u32,
             "MULTIPLY" => VK_MULTIPLY as u32,
-            "ADD" => VK_ADD as u32,
-            "SUBTRACT" => VK_SUBTRACT as u32,
+            "ADD" | "+" => VK_ADD as u32,
+            "SUBTRACT" | "-" => VK_SUBTRACT as u32,
             "DECIMAL" => VK_DECIMAL as u32,
             "DIVIDE" => VK_DIVIDE as u32,
+            "," => 0xBC, // VK_OEM_COMMA
+            "." => 0xBE, // VK_OEM_PERIOD
             "F1" => VK_F1 as u32,
             "F2" => VK_F2 as u32,
             "F3" => VK_F3 as u32,
@@ -735,11 +761,15 @@ pub mod win32 {
             "F22" => 0x85,
             "F23" => 0x86,
             "F24" => 0x87,
-            s if s.len() == 1 => {
+            s if s.chars().count() == 1 => {
                 let c = s.chars().next().unwrap();
-                c as u32
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_uppercase() as u32
+                } else {
+                    0
+                }
             }
-            _ => VK_SPACE as u32,
+            _ => 0,
         }
     }
 
@@ -1901,6 +1931,10 @@ mod tests {
         assert_eq!(parse_virtual_key("SPACE"), 0x20);
         assert_eq!(parse_virtual_key("Enter"), 0x0D);
         assert_eq!(parse_virtual_key("F1"), 0x70);
+        assert_eq!(parse_virtual_key("+"), 0x6B); // VK_ADD
+        assert_eq!(parse_virtual_key(""), 0);
+        assert_eq!(parse_virtual_key("  "), 0);
+        assert_eq!(parse_virtual_key("NON_EXISTENT_KEY"), 0);
     }
 
     #[test]
