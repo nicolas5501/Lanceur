@@ -735,13 +735,13 @@ fn apply_item_editor_to_config(sui: &SettingsWindow, cfg: &mut AppConfig, c_idx:
     }
 }
 
-fn add_dropped_file_to_container(file_path: &str, target_cont_idx: usize, config_arc: &Arc<Mutex<AppConfig>>) {
+fn create_launcher_item_from_path(file_path: &str) -> LauncherItem {
     let p = std::path::Path::new(file_path);
     let mut stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Nouvel Item".to_string());
     if stem.is_empty() {
         stem = file_path.to_string();
     }
-    
+
     // Si le fichier glissé est un raccourci .lnk ou .url, résoudre la véritable cible
     let (real_target, real_args) = if let Some((target_path, args)) = win32_utils::win32::resolve_lnk_target(file_path) {
         (target_path.to_string_lossy().to_string(), args)
@@ -786,19 +786,26 @@ fn add_dropped_file_to_container(file_path: &str, target_cont_idx: usize, config
         "🚀".to_string()
     };
 
-    let new_item = LauncherItem {
+    LauncherItem {
         id: generate_id(),
         name: stem,
         target: real_target,
         icon_type,
         icon_value: icon_val,
         args: real_args,
-        bg_color: "".to_string(),
-        text_color: "".to_string(),
+        bg_color: String::new(),
+        text_color: String::new(),
         hotkey_modifiers: Vec::new(),
         hotkey_key: String::new(),
         column: 0,
-    };
+    }
+}
+
+fn add_dropped_files_to_container(files: &[String], target_cont_idx: usize, config_arc: &Arc<Mutex<AppConfig>>) {
+    if files.is_empty() {
+        return;
+    }
+    let new_items: Vec<LauncherItem> = files.iter().map(|f| create_launcher_item_from_path(f)).collect();
 
     let mut cfg = config_arc.lock().unwrap();
     if cfg.containers.is_empty() {
@@ -811,28 +818,39 @@ fn add_dropped_file_to_container(file_path: &str, target_cont_idx: usize, config
             width: 0.0,
             order: 0,
             display_mode: "Both".to_string(),
-            bg_color: "".to_string(),
-            text_color: "".to_string(),
+            bg_color: String::new(),
+            text_color: String::new(),
             hotkey_modifiers: Vec::new(),
             hotkey_key: String::new(),
             row: 0,
             columns_count: 1,
-            items: vec![new_item],
+            items: new_items,
         });
     } else {
         let safe_idx = target_cont_idx.min(cfg.containers.len() - 1);
-        cfg.containers[safe_idx].items.push(new_item);
+        cfg.containers[safe_idx].items.extend(new_items);
     }
     save_config(&cfg);
 }
 
-fn find_container_at_coordinates(cfg: &AppConfig, x: i32, y: i32, bar_total_width: f32) -> usize {
+fn add_dropped_file_to_container(file_path: &str, target_cont_idx: usize, config_arc: &Arc<Mutex<AppConfig>>) {
+    add_dropped_files_to_container(&[file_path.to_string()], target_cont_idx, config_arc);
+}
+
+fn find_container_at_coordinates(cfg: &AppConfig, x: i32, y: i32, bar_total_width: f32, bar_total_height: f32) -> usize {
     if cfg.containers.is_empty() {
         return 0;
     }
 
     let eff_bar_h = cfg.settings.bar_height.max(cfg.settings.icon_size + 14.0).max(20.0);
-    let target_row = (y.max(0) as f32 / eff_bar_h) as usize;
+    let total_bar_h = get_total_bar_height(cfg) as f32;
+    let bar_top_y = if cfg.settings.bar_position == "Bottom" && bar_total_height > total_bar_h {
+        bar_total_height - total_bar_h
+    } else {
+        0.0
+    };
+    let rel_y = (y as f32 - bar_top_y).max(0.0);
+    let target_row = (rel_y / eff_bar_h) as usize;
 
     // 1. Récupérer les conteneurs de la ligne correspondante
     let mut row_containers: Vec<(usize, &ContainerConfig)> = cfg.containers
@@ -1157,25 +1175,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         });
                     }
                     WM_DROPFILES => {
-                        use windows_sys::Win32::UI::Shell::*;
-                        let hdrop = wparam as HDROP;
-                        let count = unsafe { DragQueryFileW(hdrop, 0xffffffff, std::ptr::null_mut(), 0) };
-                        for i in 0..count {
-                            let req_len = unsafe { DragQueryFileW(hdrop, i, std::ptr::null_mut(), 0) };
-                            if req_len > 0 {
-                                let mut buf = vec![0u16; (req_len + 1) as usize];
-                                let copied = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), buf.len() as u32) };
-                                if copied > 0 {
-                                    let path = String::from_utf16_lossy(&buf[..copied as usize]);
-                                    TRAY_HANDLER.with(|th| {
-                                        if let Some(handler) = th.borrow().as_ref() {
-                                            (handler.on_drop_file)(path);
-                                        }
-                                    });
+                        let (files, _) = unsafe { win32_utils::win32::extract_dropped_files(wparam as windows_sys::Win32::UI::Shell::HDROP) };
+                        for path in files {
+                            TRAY_HANDLER.with(|th| {
+                                if let Some(handler) = th.borrow().as_ref() {
+                                    (handler.on_drop_file)(path);
                                 }
-                            }
+                            });
                         }
-                        unsafe { DragFinish(hdrop); }
                     }
                     WM_TIMER => {
                         if wparam == win32_utils::win32::VISIBILITY_TIMER_ID {
@@ -1478,18 +1485,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     sel.load(Ordering::SeqCst)
                 } else {
                     let cfg_guard = cfg_arc.lock().unwrap();
-                    let bar_w = if let Some(bui) = bw.upgrade() {
+                    let (bar_w, bar_h) = if let Some(bui) = bw.upgrade() {
                         let sz = bui.window().size();
-                        if sz.width > 0 { sz.width as f32 } else { 1920.0 }
+                        (
+                            if sz.width > 0 { sz.width as f32 } else { 1920.0 },
+                            if sz.height > 0 { sz.height as f32 } else { 40.0 },
+                        )
                     } else {
-                        1920.0
+                        (1920.0, 40.0)
                     };
-                    find_container_at_coordinates(&cfg_guard, drop_x, drop_y, bar_w)
+                    find_container_at_coordinates(&cfg_guard, drop_x, drop_y, bar_w, bar_h)
                 };
 
-                for f in files {
-                    add_dropped_file_to_container(&f, target_cont_idx, &cfg_arc);
-                }
+                add_dropped_files_to_container(&files, target_cont_idx, &cfg_arc);
 
                 let cfg_guard = cfg_arc.lock().unwrap();
                 if let Some(bui) = bw.upgrade() {

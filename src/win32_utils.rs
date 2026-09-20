@@ -111,6 +111,26 @@ pub mod win32 {
         }
     }
 
+    /// Extrait les chemins de fichiers déposés via un HDROP et libère les ressources associées
+    pub unsafe fn extract_dropped_files(hdrop: HDROP) -> (Vec<String>, POINT) {
+        let mut pt = POINT { x: 0, y: 0 };
+        unsafe { DragQueryPoint(hdrop, &mut pt); }
+        let count = unsafe { DragQueryFileW(hdrop, 0xffffffff, std::ptr::null_mut(), 0) };
+        let mut files = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let req_len = unsafe { DragQueryFileW(hdrop, i, std::ptr::null_mut(), 0) };
+            if req_len > 0 {
+                let mut buf = vec![0u16; (req_len + 1) as usize];
+                let copied = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), buf.len() as u32) };
+                if copied > 0 {
+                    files.push(String::from_utf16_lossy(&buf[..copied as usize]));
+                }
+            }
+        }
+        unsafe { DragFinish(hdrop); }
+        (files, pt)
+    }
+
     /// Subclass Window Procedure pour intercepter le vol de focus, résister à Win+D et gérer le Drag & Drop
     unsafe extern "system" fn bar_wnd_proc_hook(
         hwnd: HWND,
@@ -123,18 +143,13 @@ pub mod win32 {
         match msg {
             WM_NCCALCSIZE => {
                 // Supprime totalement le cadre non-client
-                if wparam != 0 {
-                    return 0;
-                }
-            }
-            WM_NCACTIVATE => {
-                // Empêche Windows de dessiner la barre de titre standard
-                return 1;
+                return 0;
             }
             WM_ACTIVATE => {
-                let state = (wparam & 0xFFFF) as u32;
-                if state == WA_INACTIVE
-                    && STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
+                let is_inactive = (wparam & 0xFFFF) as u32 == WA_INACTIVE;
+                if is_inactive
+                    && STAY_ON_TOP_ENABLED.load(Ordering::SeqCst)
+                    && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
                         unsafe {
                             let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
                             if !progman.is_null() {
@@ -156,23 +171,7 @@ pub mod win32 {
                 return MA_NOACTIVATE as isize;
             }
             WM_DROPFILES => {
-                let hdrop = wparam as HDROP;
-                let mut pt = POINT { x: 0, y: 0 };
-                unsafe { DragQueryPoint(hdrop, &mut pt); }
-                let count = unsafe { DragQueryFileW(hdrop, 0xffffffff, std::ptr::null_mut(), 0) };
-                let mut files = Vec::new();
-                for i in 0..count {
-                    let req_len = unsafe { DragQueryFileW(hdrop, i, std::ptr::null_mut(), 0) };
-                    if req_len > 0 {
-                        let mut buf = vec![0u16; (req_len + 1) as usize];
-                        let copied = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), buf.len() as u32) };
-                        if copied > 0 {
-                            files.push(String::from_utf16_lossy(&buf[..copied as usize]));
-                        }
-                    }
-                }
-                unsafe { DragFinish(hdrop); }
-
+                let (files, pt) = unsafe { extract_dropped_files(wparam as HDROP) };
                 if !files.is_empty()
                     && let Ok(guard) = DROP_CALLBACK.lock()
                         && let Some(cb) = guard.as_ref() {
@@ -223,23 +222,7 @@ pub mod win32 {
         _ref_data: usize,
     ) -> LRESULT {
         if msg == WM_DROPFILES {
-            let hdrop = wparam as HDROP;
-            let mut pt = POINT { x: 0, y: 0 };
-            unsafe { DragQueryPoint(hdrop, &mut pt); }
-            let count = unsafe { DragQueryFileW(hdrop, 0xffffffff, std::ptr::null_mut(), 0) };
-            let mut files = Vec::new();
-            for i in 0..count {
-                let req_len = unsafe { DragQueryFileW(hdrop, i, std::ptr::null_mut(), 0) };
-                if req_len > 0 {
-                    let mut buf = vec![0u16; (req_len + 1) as usize];
-                    let copied = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), buf.len() as u32) };
-                    if copied > 0 {
-                        files.push(String::from_utf16_lossy(&buf[..copied as usize]));
-                    }
-                }
-            }
-            unsafe { DragFinish(hdrop); }
-
+            let (files, pt) = unsafe { extract_dropped_files(wparam as HDROP) };
             if !files.is_empty()
                 && let Ok(guard) = DROP_CALLBACK.lock()
                     && let Some(cb) = guard.as_ref() {
@@ -1872,6 +1855,7 @@ pub mod win32 {
     pub fn resolve_lnk_target(_lnk: &str) -> Option<(PathBuf, String)> { None }
     pub fn resolve_lnk_target_full(_lnk: &str) -> Option<(PathBuf, String, PathBuf)> { None }
     pub fn get_target_working_directory(_target: &str) -> Option<PathBuf> { None }
+    pub fn extract_dropped_files(_hdrop: *mut std::ffi::c_void) -> (Vec<String>, (i32, i32)) { (Vec::new(), (0, 0)) }
 }
 
 #[cfg(test)]
