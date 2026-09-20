@@ -42,15 +42,14 @@ fn parse_hex_color(hex_str: &str, default: Color) -> Color {
             let b = (val & 0xFF) as u8;
             return Color::from_argb_u8(255, r, g, b);
         }
-    } else if s.len() == 8 {
-        if let Ok(val) = u32::from_str_radix(s, 16) {
+    } else if s.len() == 8
+        && let Ok(val) = u32::from_str_radix(s, 16) {
             let r = ((val >> 24) & 0xFF) as u8;
             let g = ((val >> 16) & 0xFF) as u8;
             let b = ((val >> 8) & 0xFF) as u8;
             let a = (val & 0xFF) as u8;
             return Color::from_argb_u8(a, r, g, b);
         }
-    }
     default
 }
 
@@ -279,9 +278,9 @@ fn refresh_bar_ui(bar: &BarWindow, cfg: &AppConfig) {
                     }
                 }
 
-                let cont_icon_str = if cont.icon_type == "extracted" && (cont.icon.contains('\\') || cont.icon.contains('/') || cont.icon.is_empty()) {
-                    "📦".to_string()
-                } else if cont.icon.is_empty() {
+                let cont_icon_str = if (cont.icon_type == "extracted" && (cont.icon.contains('\\') || cont.icon.contains('/') || cont.icon.is_empty()))
+                    || cont.icon.is_empty()
+                {
                     "📦".to_string()
                 } else {
                     cont.icon.clone()
@@ -424,11 +423,10 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
         let mut cont_img = slint::Image::default();
         if cont.icon_type == "extracted" {
             let path_to_extract = if !cont.icon_path.is_empty() { &cont.icon_path } else { &cont.icon };
-            if let Some(p) = win32_utils::win32::extract_and_cache_icon(path_to_extract, &cache) {
-                if let Ok(img) = slint::Image::load_from_path(&p) {
+            if let Some(p) = win32_utils::win32::extract_and_cache_icon(path_to_extract, &cache)
+                && let Ok(img) = slint::Image::load_from_path(&p) {
                     cont_img = img;
                 }
-            }
         }
         cont_summaries.push(ContainerItemSummary {
             id: cont.id.clone().into(),
@@ -468,11 +466,10 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
         let mut cont_edit_img = slint::Image::default();
         if cont.icon_type == "extracted" {
             let p_ext = if !cont.icon_path.is_empty() { &cont.icon_path } else { &cont.icon };
-            if let Some(p) = win32_utils::win32::extract_and_cache_icon(p_ext, &cache) {
-                if let Ok(img) = slint::Image::load_from_path(&p) {
+            if let Some(p) = win32_utils::win32::extract_and_cache_icon(p_ext, &cache)
+                && let Ok(img) = slint::Image::load_from_path(&p) {
                     cont_edit_img = img;
                 }
-            }
         }
         settings_win.set_edit_container_icon_image(cont_edit_img);
         settings_win.set_edit_container_width(cont.width);
@@ -575,11 +572,10 @@ fn refresh_settings_ui(settings_win: &SettingsWindow, cfg: &AppConfig, selected_
                 let mut itm_edit_img = slint::Image::default();
                 if itm.icon_type == "extracted" {
                     let p_extract = if !itm.icon_value.is_empty() { &itm.icon_value } else { &itm.target };
-                    if let Some(p) = win32_utils::win32::extract_and_cache_icon(p_extract, &cache) {
-                        if let Ok(img) = slint::Image::load_from_path(&p) {
+                    if let Some(p) = win32_utils::win32::extract_and_cache_icon(p_extract, &cache)
+                        && let Ok(img) = slint::Image::load_from_path(&p) {
                             itm_edit_img = img;
                         }
-                    }
                 }
                 settings_win.set_item_edit_icon_image(itm_edit_img);
                 if settings_win.get_item_edit_bg().as_str() != itm.bg_color {
@@ -667,8 +663,8 @@ fn apply_item_editor_to_config(sui: &SettingsWindow, cfg: &mut AppConfig, c_idx:
         } else {
             &target
         };
-        if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(check_path, &cache) {
-            if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
+        if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(check_path, &cache)
+            && let Ok(img) = slint::Image::load_from_path(&cached_icon) {
                 icon_type = "extracted".to_string();
                 sui.set_item_edit_icon_type("extracted".into());
                 sui.set_item_edit_icon_image(img);
@@ -677,7 +673,6 @@ fn apply_item_editor_to_config(sui: &SettingsWindow, cfg: &mut AppConfig, c_idx:
                     sui.set_item_edit_icon_value(icon_value.clone().into());
                 }
             }
-        }
     }
 
     let mut mods = Vec::new();
@@ -747,20 +742,48 @@ fn add_dropped_file_to_container(file_path: &str, target_cont_idx: usize, config
         stem = file_path.to_string();
     }
     
-    // Si le fichier glissé est un raccourci .lnk, résoudre la véritable cible du programme et ses arguments
+    // Si le fichier glissé est un raccourci .lnk ou .url, résoudre la véritable cible
     let (real_target, real_args) = if let Some((target_path, args)) = win32_utils::win32::resolve_lnk_target(file_path) {
         (target_path.to_string_lossy().to_string(), args)
+    } else if file_path.to_lowercase().ends_with(".url") && Path::new(file_path).exists() {
+        if let Ok(content) = std::fs::read_to_string(file_path) {
+            let mut found_url = None;
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if let Some(u) = trimmed.strip_prefix("URL=") {
+                    let clean_u = u.trim();
+                    if !clean_u.is_empty() {
+                        found_url = Some((clean_u.to_string(), String::new()));
+                        break;
+                    }
+                }
+            }
+            found_url.unwrap_or_else(|| (file_path.to_string(), String::new()))
+        } else {
+            (file_path.to_string(), String::new())
+        }
     } else {
         (file_path.to_string(), String::new())
     };
 
     let cache = cache_dir();
     let icon_source = if Path::new(&real_target).exists() { real_target.as_str() } else { file_path };
-    let has_icon = win32_utils::win32::extract_and_cache_icon(icon_source, &cache).is_some()
-        || win32_utils::win32::extract_and_cache_icon(file_path, &cache).is_some();
+    let (has_icon, chosen_icon_source) = if win32_utils::win32::extract_and_cache_icon(icon_source, &cache).is_some() {
+        (true, icon_source.to_string())
+    } else if win32_utils::win32::extract_and_cache_icon(file_path, &cache).is_some() {
+        (true, file_path.to_string())
+    } else {
+        (false, String::new())
+    };
     let icon_type = if has_icon { "extracted".to_string() } else { "emoji".to_string() };
-    let icon_val = if has_icon { icon_source.to_string() } else {
-        if p.is_dir() { "📁".to_string() } else { "🚀".to_string() }
+    let icon_val = if has_icon {
+        chosen_icon_source
+    } else if p.is_dir() {
+        "📁".to_string()
+    } else if real_target.starts_with("http://") || real_target.starts_with("https://") {
+        "🌐".to_string()
+    } else {
+        "🚀".to_string()
     };
 
     let new_item = LauncherItem {
@@ -880,31 +903,46 @@ fn find_container_at_coordinates(cfg: &AppConfig, x: i32, y: i32, bar_total_widt
 }
 
 #[cfg(windows)]
+static REGISTERED_HOTKEY_IDS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+#[cfg(windows)]
 fn register_all_hotkeys_for_app(hwnd: windows_sys::Win32::Foundation::HWND, cfg: &AppConfig) {
     if hwnd.is_null() {
         return;
     }
+
+    // 0. Désenregistrer tous les raccourcis précédemment enregistrés pour éviter les fuites ou conflits
+    if let Ok(mut old_ids) = REGISTERED_HOTKEY_IDS.lock() {
+        for id in old_ids.drain(..) {
+            win32_utils::win32::unregister_hotkey_id(hwnd, id);
+        }
+    }
+
+    let mut newly_registered = Vec::new();
+
     // 1. Raccourci Global Principal
-    win32_utils::win32::register_hotkey_combo(
+    let main_id = win32_utils::win32::MAIN_HOTKEY_ID;
+    if win32_utils::win32::register_hotkey_combo(
         hwnd,
-        win32_utils::win32::MAIN_HOTKEY_ID,
+        main_id,
         &cfg.settings.hotkey_modifiers,
         &cfg.settings.hotkey_key,
-    );
+    ) {
+        newly_registered.push(main_id);
+    }
 
     // 2. Raccourcis Conteneurs (IDs 10000 + i)
     for (i, cont) in cfg.containers.iter().enumerate() {
         let hotkey_id = 10000 + (i as i32);
-        if !cont.hotkey_key.is_empty() {
-            win32_utils::win32::register_hotkey_combo(
+        if !cont.hotkey_key.is_empty()
+            && win32_utils::win32::register_hotkey_combo(
                 hwnd,
                 hotkey_id,
                 &cont.hotkey_modifiers,
                 &cont.hotkey_key,
-            );
-        } else {
-            win32_utils::win32::unregister_hotkey_id(hwnd, hotkey_id);
-        }
+            ) {
+                newly_registered.push(hotkey_id);
+            }
     }
 
     // 3. Raccourcis Items (IDs 20000 + k)
@@ -912,19 +950,35 @@ fn register_all_hotkeys_for_app(hwnd: windows_sys::Win32::Foundation::HWND, cfg:
     for cont in &cfg.containers {
         for itm in &cont.items {
             let hotkey_id = 20000 + item_count;
-            if !itm.hotkey_key.is_empty() {
-                win32_utils::win32::register_hotkey_combo(
+            if !itm.hotkey_key.is_empty()
+                && win32_utils::win32::register_hotkey_combo(
                     hwnd,
                     hotkey_id,
                     &itm.hotkey_modifiers,
                     &itm.hotkey_key,
-                );
-            } else {
-                win32_utils::win32::unregister_hotkey_id(hwnd, hotkey_id);
-            }
+                ) {
+                    newly_registered.push(hotkey_id);
+                }
             item_count += 1;
         }
     }
+
+    if let Ok(mut ids) = REGISTERED_HOTKEY_IDS.lock() {
+        *ids = newly_registered;
+    }
+}
+
+fn refresh_hotkeys_for_app(cfg: &AppConfig) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::HWND;
+        let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
+        if !tray_hwnd.is_null() {
+            register_all_hotkeys_for_app(tray_hwnd, cfg);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = cfg;
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1087,7 +1141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     WM_COMMAND => {
-                        let cmd_id = (wparam & 0xffff) as usize;
+                        let cmd_id = wparam & 0xffff;
                         TRAY_HANDLER.with(|th| {
                             if let Some(handler) = th.borrow().as_ref() {
                                 (handler.handle_menu_cmd)(cmd_id);
@@ -1107,15 +1161,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let hdrop = wparam as HDROP;
                         let count = unsafe { DragQueryFileW(hdrop, 0xffffffff, std::ptr::null_mut(), 0) };
                         for i in 0..count {
-                            let mut buf: [u16; 512] = [0; 512];
-                            let len = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), 512) };
-                            if len > 0 {
-                                let path = String::from_utf16_lossy(&buf[..len as usize]);
-                                TRAY_HANDLER.with(|th| {
-                                    if let Some(handler) = th.borrow().as_ref() {
-                                        (handler.on_drop_file)(path);
-                                    }
-                                });
+                            let req_len = unsafe { DragQueryFileW(hdrop, i, std::ptr::null_mut(), 0) };
+                            if req_len > 0 {
+                                let mut buf = vec![0u16; (req_len + 1) as usize];
+                                let copied = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), buf.len() as u32) };
+                                if copied > 0 {
+                                    let path = String::from_utf16_lossy(&buf[..copied as usize]);
+                                    TRAY_HANDLER.with(|th| {
+                                        if let Some(handler) = th.borrow().as_ref() {
+                                            (handler.on_drop_file)(path);
+                                        }
+                                    });
+                                }
                             }
                         }
                         unsafe { DragFinish(hdrop); }
@@ -1320,14 +1377,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         });
                     } else if (10000..20000).contains(&hk_id) {
                         // Ouvrir le conteneur spécifié
-                        let cont_idx = (hk_id - 10000) as i32;
+                        let cont_idx = hk_id - 10000;
                         let bw = bw_for_hk.clone();
                         let is_vis = is_vis_for_hk.clone();
+                        let cfg_clone = cfg_for_hk.clone();
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = bw.upgrade() {
-                                show_bar_window(&ui, true);
-                                is_vis.store(true, Ordering::SeqCst);
-                                ui.set_active_dropdown_idx(cont_idx);
+                                let cfg_guard = cfg_clone.lock().unwrap();
+                                if cont_idx >= 0 && (cont_idx as usize) < cfg_guard.containers.len() {
+                                    show_bar_window(&ui, true);
+                                    is_vis.store(true, Ordering::SeqCst);
+                                    ui.set_active_dropdown_idx(cont_idx);
+                                    ui.invoke_dropdown_state_changed(true);
+                                }
                             }
                         });
                     } else if hk_id >= 20000 {
@@ -1554,8 +1616,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mouse_cfg = app_config.clone();
         let mouse_timer = slint::Timer::default();
         mouse_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(50), move || {
-            if let Some(bui) = bw.upgrade() {
-                if bui.get_active_dropdown_idx() >= 0 {
+            if let Some(bui) = bw.upgrade()
+                && bui.get_active_dropdown_idx() >= 0 {
                     #[cfg(windows)]
                     {
                         use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
@@ -1565,8 +1627,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let mut pt = POINT { x: 0, y: 0 };
                             let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
                             unsafe {
-                                if GetCursorPos(&mut pt) != 0 && GetWindowRect(hwnd, &mut rect) != 0 {
-                                    if pt.x < rect.left || pt.x >= rect.right || pt.y < rect.top || pt.y >= rect.bottom {
+                                if GetCursorPos(&mut pt) != 0 && GetWindowRect(hwnd, &mut rect) != 0
+                                    && (pt.x < rect.left || pt.x >= rect.right || pt.y < rect.top || pt.y >= rect.bottom) {
                                         bui.set_active_dropdown_idx(-1);
                                         let cfg = mouse_cfg.lock().unwrap();
                                         let total_h = get_total_bar_height(&cfg);
@@ -1581,12 +1643,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             cfg.settings.stay_on_top,
                                         );
                                     }
-                                }
                             }
                         }
                     }
                 }
-            }
         });
         std::mem::forget(mouse_timer);
     }
@@ -1596,13 +1656,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let app_cfg_clone = app_config.clone();
         let bar_weak = bar_window.as_weak();
         bar_window.on_container_width_changed(move |idx, new_width| {
-            let i = idx as usize;
-            let mut cfg = app_cfg_clone.lock().unwrap();
-            if let Some(cont) = cfg.containers.get_mut(i) {
-                cont.width = new_width;
-                save_config(&cfg);
-                if let Some(bui) = bar_weak.upgrade() {
-                    refresh_bar_ui(&bui, &cfg);
+            if idx >= 0 {
+                let i = idx as usize;
+                let mut cfg = app_cfg_clone.lock().unwrap();
+                if let Some(cont) = cfg.containers.get_mut(i) {
+                    cont.width = new_width;
+                    save_config(&cfg);
+                    if let Some(bui) = bar_weak.upgrade() {
+                        refresh_bar_ui(&bui, &cfg);
+                    }
                 }
             }
         });
@@ -1640,7 +1702,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let settings_weak = settings_window.as_weak();
         let cfg_arc = app_config.clone();
         let sel_idx = selected_container_idx.clone();
-        let bring_fn = bring_settings_window_to_front.clone();
+        let bring_fn = bring_settings_window_to_front;
 
         bar_window.on_open_settings(move || {
             if let Some(sui) = settings_weak.upgrade() {
@@ -1657,7 +1719,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let settings_weak = settings_window.as_weak();
         let cfg_arc = app_config.clone();
         let sel_idx = selected_container_idx.clone();
-        let bring_fn = bring_settings_window_to_front.clone();
+        let bring_fn = bring_settings_window_to_front;
 
         bar_window.on_item_right_clicked(move |item_id_slint| {
             let item_id = item_id_slint.to_string();
@@ -1666,7 +1728,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let s_weak = settings_weak.clone();
             let c_arc = cfg_arc.clone();
             let s_idx = sel_idx.clone();
-            let b_fn = bring_fn.clone();
+            let b_fn = bring_fn;
 
             slint::Timer::single_shot(std::time::Duration::from_millis(20), move || {
                 log_trace("Timer fired");
@@ -1743,6 +1805,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             log_trace(&format!("Removed from config: {}", removed));
                             if removed {
                                 save_config(&cfg);
+                                refresh_hotkeys_for_app(&cfg);
                                 log_trace("Config saved");
                                 let b_clone = b_weak.clone();
                                 let s_clone = s_weak.clone();
@@ -1839,12 +1902,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let sel_idx = selected_container_idx.clone();
 
         settings_window.on_delete_line(move |line_idx| {
+            if line_idx < 0 {
+                return;
+            }
             let del_row = line_idx as usize;
             if let Some(sui) = settings_weak.upgrade() {
                 let mut cfg = cfg_arc.lock().unwrap();
                 let max_row = cfg.containers.iter().map(|c| c.row).max().unwrap_or(0);
                 let current_rows = (max_row + 1).max(cfg.settings.rows_count).max(1);
-                if current_rows <= 1 {
+                if current_rows <= 1 || del_row >= current_rows {
                     return;
                 }
                 let fallback_row = if del_row > 0 { del_row - 1 } else { 0 };
@@ -1875,10 +1941,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let sel_idx = selected_container_idx.clone();
 
         settings_window.on_move_line_up(move |line_idx| {
-            let row = line_idx as usize;
-            if row == 0 {
+            if line_idx <= 0 {
                 return;
             }
+            let row = line_idx as usize;
             if let Some(sui) = settings_weak.upgrade() {
                 let mut cfg = cfg_arc.lock().unwrap();
                 for cont in &mut cfg.containers {
@@ -1907,6 +1973,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let sel_idx = selected_container_idx.clone();
 
         settings_window.on_move_line_down(move |line_idx| {
+            if line_idx < 0 {
+                return;
+            }
             let row = line_idx as usize;
             if let Some(sui) = settings_weak.upgrade() {
                 let mut cfg = cfg_arc.lock().unwrap();
@@ -1941,11 +2010,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let sel_idx = selected_container_idx.clone();
 
         settings_window.on_select_container(move |idx| {
-            if let Some(sui) = settings_weak.upgrade() {
-                sel_idx.store(idx as usize, Ordering::SeqCst);
-                let cfg = cfg_arc.lock().unwrap();
-                refresh_settings_ui(&sui, &cfg, idx as usize);
-            }
+            if idx >= 0
+                && let Some(sui) = settings_weak.upgrade() {
+                    let mut i = idx as usize;
+                    let cfg = cfg_arc.lock().unwrap();
+                    if !cfg.containers.is_empty() {
+                        i = i.min(cfg.containers.len() - 1);
+                    }
+                    sel_idx.store(i, Ordering::SeqCst);
+                    refresh_settings_ui(&sui, &cfg, i);
+                }
         });
     }
 
@@ -1999,20 +2073,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let sel_idx = selected_container_idx.clone();
 
         settings_window.on_delete_container(move |idx| {
-            if let Some(sui) = settings_weak.upgrade() {
-                let i = idx as usize;
-                let mut cfg = cfg_arc.lock().unwrap();
-                if i < cfg.containers.len() && cfg.containers.len() > 1 {
-                    cfg.containers.remove(i);
-                    save_config(&cfg);
-                    sel_idx.store(0, Ordering::SeqCst);
-                    refresh_settings_ui(&sui, &cfg, 0);
-                    if let Some(bui) = bar_weak.upgrade() {
-                        refresh_bar_ui(&bui, &cfg);
+            if idx >= 0
+                && let Some(sui) = settings_weak.upgrade() {
+                    let i = idx as usize;
+                    let mut cfg = cfg_arc.lock().unwrap();
+                    if i < cfg.containers.len() && cfg.containers.len() > 1 {
+                        cfg.containers.remove(i);
+                        save_config(&cfg);
+                        refresh_hotkeys_for_app(&cfg);
+                        sel_idx.store(0, Ordering::SeqCst);
+                        refresh_settings_ui(&sui, &cfg, 0);
+                        if let Some(bui) = bar_weak.upgrade() {
+                            refresh_bar_ui(&bui, &cfg);
+                        }
+                        update_bar_window_geometry(&cfg);
                     }
-                    update_bar_window_geometry(&cfg);
                 }
-            }
         });
     }
 
@@ -2028,19 +2104,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let c_arc = cfg_arc.clone();
         let s_idx = sel_idx.clone();
         settings_window.on_move_container_up(move |idx| {
-            let i = idx as usize;
-            if i > 0 {
+            if idx > 0 {
+                let i = idx as usize;
                 let mut cfg = c_arc.lock().unwrap();
-                cfg.containers.swap(i, i - 1);
-                save_config(&cfg);
-                s_idx.store(i - 1, Ordering::SeqCst);
-                if let Some(sui) = s_weak.upgrade() {
-                    refresh_settings_ui(&sui, &cfg, i - 1);
+                if i < cfg.containers.len() {
+                    cfg.containers.swap(i, i - 1);
+                    save_config(&cfg);
+                    refresh_hotkeys_for_app(&cfg);
+                    s_idx.store(i - 1, Ordering::SeqCst);
+                    if let Some(sui) = s_weak.upgrade() {
+                        refresh_settings_ui(&sui, &cfg, i - 1);
+                    }
+                    if let Some(bui) = b_weak.upgrade() {
+                        refresh_bar_ui(&bui, &cfg);
+                    }
+                    update_bar_window_geometry(&cfg);
                 }
-                if let Some(bui) = b_weak.upgrade() {
-                    refresh_bar_ui(&bui, &cfg);
-                }
-                update_bar_window_geometry(&cfg);
             }
         });
 
@@ -2049,19 +2128,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let c_arc2 = cfg_arc.clone();
         let s_idx2 = sel_idx.clone();
         settings_window.on_move_container_down(move |idx| {
-            let i = idx as usize;
-            let mut cfg = c_arc2.lock().unwrap();
-            if i + 1 < cfg.containers.len() {
-                cfg.containers.swap(i, i + 1);
-                save_config(&cfg);
-                s_idx2.store(i + 1, Ordering::SeqCst);
-                if let Some(sui) = s_weak2.upgrade() {
-                    refresh_settings_ui(&sui, &cfg, i + 1);
+            if idx >= 0 {
+                let i = idx as usize;
+                let mut cfg = c_arc2.lock().unwrap();
+                if i + 1 < cfg.containers.len() {
+                    cfg.containers.swap(i, i + 1);
+                    save_config(&cfg);
+                    refresh_hotkeys_for_app(&cfg);
+                    s_idx2.store(i + 1, Ordering::SeqCst);
+                    if let Some(sui) = s_weak2.upgrade() {
+                        refresh_settings_ui(&sui, &cfg, i + 1);
+                    }
+                    if let Some(bui) = b_weak2.upgrade() {
+                        refresh_bar_ui(&bui, &cfg);
+                    }
+                    update_bar_window_geometry(&cfg);
                 }
-                if let Some(bui) = b_weak2.upgrade() {
-                    refresh_bar_ui(&bui, &cfg);
-                }
-                update_bar_window_geometry(&cfg);
             }
         });
     }
@@ -2104,15 +2186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     save_config(&cfg);
                     update_bar_window_geometry(&cfg);
-
-                    #[cfg(windows)]
-                    {
-                        use windows_sys::Win32::Foundation::HWND;
-                        let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
-                        if !tray_hwnd.is_null() {
-                            register_all_hotkeys_for_app(tray_hwnd, &cfg);
-                        }
-                    }
+                    refresh_hotkeys_for_app(&cfg);
 
                     refresh_settings_ui(&sui, &cfg, idx);
                     if let Some(bui) = bar_weak.upgrade() {
@@ -2131,8 +2205,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let sel_idx = selected_container_idx.clone();
 
         settings_window.on_browse_container_icon_file(move || {
-            if let Some(sui) = settings_weak.upgrade() {
-                if let Some(file) = win32_utils::win32::pick_file_dialog(
+            if let Some(sui) = settings_weak.upgrade()
+                && let Some(file) = win32_utils::win32::pick_file_dialog(
                     Some("Sélectionner une icône"),
                     Some("Exécutables & Icônes (*.exe, *.lnk, *.ico, *.dll)"),
                     Some(&["exe", "lnk", "ico", "dll"]),
@@ -2145,8 +2219,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
                     let icon_source = if Path::new(&resolved_icon).exists() { &resolved_icon } else { &path_str };
                     let cache = cache_dir();
-                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(icon_source, &cache) {
-                        if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
+                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(icon_source, &cache)
+                        && let Ok(img) = slint::Image::load_from_path(&cached_icon) {
                             sui.set_edit_container_icon_type("extracted".into());
                             sui.set_edit_container_icon_image(img);
                             let idx = sel_idx.load(Ordering::SeqCst);
@@ -2161,9 +2235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             refresh_settings_ui(&sui, &cfg, idx);
                         }
-                    }
                 }
-            }
         });
     }
 
@@ -2210,8 +2282,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let c_idx = s_idx2.load(Ordering::SeqCst);
                 let i_idx = item_idx as usize;
                 let cfg = c_arc2.lock().unwrap();
-                if let Some(cont) = cfg.containers.get(c_idx) {
-                    if let Some(itm) = cont.items.get(i_idx) {
+                if let Some(cont) = cfg.containers.get(c_idx)
+                    && let Some(itm) = cont.items.get(i_idx) {
                         sui.set_selected_item_index(item_idx);
                         sui.set_item_edit_name(itm.name.clone().into());
                         sui.set_item_edit_target(itm.target.clone().into());
@@ -2234,16 +2306,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if itm.icon_type == "extracted" {
                             let cache = cache_dir();
                             let p_extract = if !itm.icon_value.is_empty() { &itm.icon_value } else { &itm.target };
-                            if let Some(p) = win32_utils::win32::extract_and_cache_icon(p_extract, &cache) {
-                                if let Ok(img) = slint::Image::load_from_path(&p) {
+                            if let Some(p) = win32_utils::win32::extract_and_cache_icon(p_extract, &cache)
+                                && let Ok(img) = slint::Image::load_from_path(&p) {
                                     itm_edit_img = img;
                                 }
-                            }
                         }
                         sui.set_item_edit_icon_image(itm_edit_img);
                         sui.set_show_item_editor(false);
                     }
-                }
             }
         });
     }
@@ -2252,8 +2322,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let settings_weak = settings_window.as_weak();
         settings_window.on_browse_item_target(move || {
-            if let Some(sui) = settings_weak.upgrade() {
-                if let Some(file) = win32_utils::win32::pick_file_dialog(
+            if let Some(sui) = settings_weak.upgrade()
+                && let Some(file) = win32_utils::win32::pick_file_dialog(
                     Some("Sélectionner une application ou un fichier"),
                     None,
                     None,
@@ -2269,11 +2339,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         path_str.clone()
                     };
                     sui.set_item_edit_target(full_target.into());
-                    if sui.get_item_edit_name().is_empty() {
-                        if let Some(stem) = file.file_stem() {
+                    if sui.get_item_edit_name().is_empty()
+                        && let Some(stem) = file.file_stem() {
                             sui.set_item_edit_name(stem.to_string_lossy().to_string().into());
                         }
-                    }
                     // Extraction automatique de l'icône de l'application visée
                     let cache = cache_dir();
                     let raw_target = if let Some((t, _)) = win32_utils::win32::resolve_lnk_target(&path_str) {
@@ -2282,15 +2351,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         path_str.clone()
                     };
                     let icon_source = if Path::new(&raw_target).exists() { &raw_target } else { &path_str };
-                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(icon_source, &cache) {
-                        if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
+                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(icon_source, &cache)
+                        && let Ok(img) = slint::Image::load_from_path(&cached_icon) {
                             sui.set_item_edit_icon_type("extracted".into());
                             sui.set_item_edit_icon_image(img);
                             sui.set_item_edit_icon_value(icon_source.clone().into());
                         }
-                    }
                 }
-            }
         });
     }
 
@@ -2298,8 +2365,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let settings_weak = settings_window.as_weak();
         settings_window.on_browse_item_icon_file(move || {
-            if let Some(sui) = settings_weak.upgrade() {
-                if let Some(file) = win32_utils::win32::pick_file_dialog(
+            if let Some(sui) = settings_weak.upgrade()
+                && let Some(file) = win32_utils::win32::pick_file_dialog(
                     Some("Sélectionner une icône"),
                     Some("Exécutables & Icônes (*.exe, *.lnk, *.ico, *.dll)"),
                     Some(&["exe", "lnk", "ico", "dll"]),
@@ -2312,15 +2379,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
                     let icon_source = if Path::new(&resolved_icon).exists() { &resolved_icon } else { &path_str };
                     let cache = cache_dir();
-                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(icon_source, &cache) {
-                        if let Ok(img) = slint::Image::load_from_path(&cached_icon) {
+                    if let Some(cached_icon) = win32_utils::win32::extract_and_cache_icon(icon_source, &cache)
+                        && let Ok(img) = slint::Image::load_from_path(&cached_icon) {
                             sui.set_item_edit_icon_type("extracted".into());
                             sui.set_item_edit_icon_image(img);
                             sui.set_item_edit_icon_value(icon_source.clone().into());
                         }
-                    }
                 }
-            }
         });
     }
 
@@ -2347,13 +2412,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut cfg = cfg_arc.lock().unwrap();
                 apply_item_editor_to_config(&sui, &mut cfg, c_idx);
                 save_config(&cfg);
-
-                #[cfg(windows)]
-                {
-                    use windows_sys::Win32::Foundation::HWND;
-                    let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
-                    register_all_hotkeys_for_app(tray_hwnd, &cfg);
-                }
+                refresh_hotkeys_for_app(&cfg);
 
                 refresh_settings_ui(&sui, &cfg, c_idx);
                 if let Some(bui) = bar_weak.upgrade() {
@@ -2473,15 +2532,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let item_idx = sui.get_selected_item_index();
                     if item_idx >= 0 {
                         let mut cfg = c_arc.lock().unwrap();
-                        if let Some(cont) = cfg.containers.get_mut(c_idx) {
-                            if let Some(itm) = cont.items.get_mut(item_idx as usize) {
+                        if let Some(cont) = cfg.containers.get_mut(c_idx)
+                            && let Some(itm) = cont.items.get_mut(item_idx as usize) {
                                 itm.bg_color = new_col;
                                 save_config(&cfg);
                                 if let Some(bui) = b_weak.upgrade() {
                                     refresh_bar_ui(&bui, &cfg);
                                 }
                             }
-                        }
                     }
                 }
             }
@@ -2500,15 +2558,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let item_idx = sui.get_selected_item_index();
                 if item_idx >= 0 {
                     let mut cfg = c_arc.lock().unwrap();
-                    if let Some(cont) = cfg.containers.get_mut(c_idx) {
-                        if let Some(itm) = cont.items.get_mut(item_idx as usize) {
+                    if let Some(cont) = cfg.containers.get_mut(c_idx)
+                        && let Some(itm) = cont.items.get_mut(item_idx as usize) {
                             itm.bg_color = txt;
                             save_config(&cfg);
                             if let Some(bui) = b_weak.upgrade() {
                                 refresh_bar_ui(&bui, &cfg);
                             }
                         }
-                    }
                 }
             }
         });
@@ -2529,15 +2586,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let item_idx = sui.get_selected_item_index();
                     if item_idx >= 0 {
                         let mut cfg = c_arc.lock().unwrap();
-                        if let Some(cont) = cfg.containers.get_mut(c_idx) {
-                            if let Some(itm) = cont.items.get_mut(item_idx as usize) {
+                        if let Some(cont) = cfg.containers.get_mut(c_idx)
+                            && let Some(itm) = cont.items.get_mut(item_idx as usize) {
                                 itm.text_color = new_col;
                                 save_config(&cfg);
                                 if let Some(bui) = b_weak.upgrade() {
                                     refresh_bar_ui(&bui, &cfg);
                                 }
                             }
-                        }
                     }
                 }
             }
@@ -2556,15 +2612,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let item_idx = sui.get_selected_item_index();
                 if item_idx >= 0 {
                     let mut cfg = c_arc.lock().unwrap();
-                    if let Some(cont) = cfg.containers.get_mut(c_idx) {
-                        if let Some(itm) = cont.items.get_mut(item_idx as usize) {
+                    if let Some(cont) = cfg.containers.get_mut(c_idx)
+                        && let Some(itm) = cont.items.get_mut(item_idx as usize) {
                             itm.text_color = txt;
                             save_config(&cfg);
                             if let Some(bui) = b_weak.upgrade() {
                                 refresh_bar_ui(&bui, &cfg);
                             }
                         }
-                    }
                 }
             }
         });
@@ -2651,8 +2706,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let c_arc = app_config.clone();
         let sel_idx = selected_container_idx.clone();
         settings_window.on_eyedropper_container_bg(move || {
-            if let Some(sui) = s_weak.upgrade() {
-                if let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
+            if let Some(sui) = s_weak.upgrade()
+                && let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
                     sui.set_edit_container_bg(new_col.clone().into());
                     let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 30, 41, 59));
                     sui.set_edit_container_bg_col(col);
@@ -2666,7 +2721,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
-            }
         });
 
         // Pipette d'écran (Eyedropper) Conteneur Texte
@@ -2675,8 +2729,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let c_arc = app_config.clone();
         let sel_idx = selected_container_idx.clone();
         settings_window.on_eyedropper_container_text(move || {
-            if let Some(sui) = s_weak.upgrade() {
-                if let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
+            if let Some(sui) = s_weak.upgrade()
+                && let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
                     sui.set_edit_container_text(new_col.clone().into());
                     let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 248, 250, 252));
                     sui.set_edit_container_text_col(col);
@@ -2690,7 +2744,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
-            }
         });
 
         // Pipette d'écran (Eyedropper) Item Fond
@@ -2699,8 +2752,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let c_arc = app_config.clone();
         let sel_idx = selected_container_idx.clone();
         settings_window.on_eyedropper_item_bg(move || {
-            if let Some(sui) = s_weak.upgrade() {
-                if let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
+            if let Some(sui) = s_weak.upgrade()
+                && let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
                     sui.set_item_edit_bg(new_col.clone().into());
                     let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 30, 41, 59));
                     sui.set_item_edit_bg_col(col);
@@ -2708,18 +2761,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let item_idx = sui.get_selected_item_index();
                     if item_idx >= 0 {
                         let mut cfg = c_arc.lock().unwrap();
-                        if let Some(cont) = cfg.containers.get_mut(c_idx) {
-                            if let Some(itm) = cont.items.get_mut(item_idx as usize) {
+                        if let Some(cont) = cfg.containers.get_mut(c_idx)
+                            && let Some(itm) = cont.items.get_mut(item_idx as usize) {
                                 itm.bg_color = new_col;
                                 save_config(&cfg);
                                 if let Some(bui) = b_weak.upgrade() {
                                     refresh_bar_ui(&bui, &cfg);
                                 }
                             }
-                        }
                     }
                 }
-            }
         });
 
         // Pipette d'écran (Eyedropper) Item Texte
@@ -2728,8 +2779,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let c_arc = app_config.clone();
         let sel_idx = selected_container_idx.clone();
         settings_window.on_eyedropper_item_text(move || {
-            if let Some(sui) = s_weak.upgrade() {
-                if let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
+            if let Some(sui) = s_weak.upgrade()
+                && let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
                     sui.set_item_edit_text(new_col.clone().into());
                     let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 248, 250, 252));
                     sui.set_item_edit_text_col(col);
@@ -2737,18 +2788,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let item_idx = sui.get_selected_item_index();
                     if item_idx >= 0 {
                         let mut cfg = c_arc.lock().unwrap();
-                        if let Some(cont) = cfg.containers.get_mut(c_idx) {
-                            if let Some(itm) = cont.items.get_mut(item_idx as usize) {
+                        if let Some(cont) = cfg.containers.get_mut(c_idx)
+                            && let Some(itm) = cont.items.get_mut(item_idx as usize) {
                                 itm.text_color = new_col;
                                 save_config(&cfg);
                                 if let Some(bui) = b_weak.upgrade() {
                                     refresh_bar_ui(&bui, &cfg);
                                 }
                             }
-                        }
                     }
                 }
-            }
         });
 
         // Pipette d'écran (Eyedropper) Bandeau Fond
@@ -2756,8 +2805,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let b_weak = bar_window.as_weak();
         let c_arc = app_config.clone();
         settings_window.on_eyedropper_bar_bg(move || {
-            if let Some(sui) = s_weak.upgrade() {
-                if let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
+            if let Some(sui) = s_weak.upgrade()
+                && let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
                     sui.set_pref_bar_bg_color(new_col.clone().into());
                     let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 15, 23, 42));
                     sui.set_pref_bar_bg_color_val(col);
@@ -2768,7 +2817,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         refresh_bar_ui(&bui, &cfg);
                     }
                 }
-            }
         });
 
         // Pipette d'écran (Eyedropper) Bandeau Texte
@@ -2776,8 +2824,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let b_weak = bar_window.as_weak();
         let c_arc = app_config.clone();
         settings_window.on_eyedropper_bar_text(move || {
-            if let Some(sui) = s_weak.upgrade() {
-                if let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
+            if let Some(sui) = s_weak.upgrade()
+                && let Some(new_col) = win32_utils::win32::pick_color_eyedropper() {
                     sui.set_pref_bar_text_color(new_col.clone().into());
                     let col = parse_hex_color(&new_col, Color::from_argb_u8(255, 248, 250, 252));
                     sui.set_pref_bar_text_color_val(col);
@@ -2788,7 +2836,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         refresh_bar_ui(&bui, &cfg);
                     }
                 }
-            }
         });
     }
 
@@ -2800,21 +2847,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let sel_idx = selected_container_idx.clone();
 
         settings_window.on_delete_item(move |item_idx| {
-            if let Some(sui) = settings_weak.upgrade() {
-                let c_idx = sel_idx.load(Ordering::SeqCst);
-                let i_idx = item_idx as usize;
-                let mut cfg = cfg_arc.lock().unwrap();
-                if let Some(cont) = cfg.containers.get_mut(c_idx) {
-                    if i_idx < cont.items.len() {
-                        cont.items.remove(i_idx);
-                        save_config(&cfg);
-                        refresh_settings_ui(&sui, &cfg, c_idx);
-                        if let Some(bui) = bar_weak.upgrade() {
-                            refresh_bar_ui(&bui, &cfg);
+            if item_idx >= 0
+                && let Some(sui) = settings_weak.upgrade() {
+                    let c_idx = sel_idx.load(Ordering::SeqCst);
+                    let i_idx = item_idx as usize;
+                    let mut cfg = cfg_arc.lock().unwrap();
+                    if let Some(cont) = cfg.containers.get_mut(c_idx)
+                        && i_idx < cont.items.len() {
+                            cont.items.remove(i_idx);
+                            let new_sel = if cont.items.is_empty() {
+                                -1
+                            } else {
+                                (i_idx.min(cont.items.len() - 1)) as i32
+                            };
+                            save_config(&cfg);
+                            refresh_hotkeys_for_app(&cfg);
+                            sui.set_selected_item_index(new_sel);
+                            refresh_settings_ui(&sui, &cfg, c_idx);
+                            if let Some(bui) = bar_weak.upgrade() {
+                                refresh_bar_ui(&bui, &cfg);
+                            }
                         }
-                    }
                 }
-            }
         });
     }
 
@@ -2830,24 +2884,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let c_arc = cfg_arc.clone();
         let s_idx = sel_idx.clone();
         settings_window.on_move_item_up(move |item_idx| {
-            let i = item_idx as usize;
-            let c_idx = s_idx.load(Ordering::SeqCst);
-            let mut cfg = c_arc.lock().unwrap();
-            if let Some(cont) = cfg.containers.get_mut(c_idx) {
-                if i < cont.items.len() {
-                    let cur_col = cont.items[i].column;
-                    if let Some(prev_idx) = (0..i).rev().find(|&k| cont.items[k].column == cur_col) {
-                        cont.items.swap(i, prev_idx);
-                        save_config(&cfg);
-                        if let Some(sui) = s_weak.upgrade() {
-                            sui.set_selected_item_index(prev_idx as i32);
-                            refresh_settings_ui(&sui, &cfg, c_idx);
-                        }
-                        if let Some(bui) = b_weak.upgrade() {
-                            refresh_bar_ui(&bui, &cfg);
+            if item_idx > 0 {
+                let i = item_idx as usize;
+                let c_idx = s_idx.load(Ordering::SeqCst);
+                let mut cfg = c_arc.lock().unwrap();
+                if let Some(cont) = cfg.containers.get_mut(c_idx)
+                    && i < cont.items.len() {
+                        let cur_col = cont.items[i].column;
+                        if let Some(prev_idx) = (0..i).rev().find(|&k| cont.items[k].column == cur_col) {
+                            cont.items.swap(i, prev_idx);
+                            save_config(&cfg);
+                            refresh_hotkeys_for_app(&cfg);
+                            if let Some(sui) = s_weak.upgrade() {
+                                sui.set_selected_item_index(prev_idx as i32);
+                                refresh_settings_ui(&sui, &cfg, c_idx);
+                            }
+                            if let Some(bui) = b_weak.upgrade() {
+                                refresh_bar_ui(&bui, &cfg);
+                            }
                         }
                     }
-                }
             }
         });
 
@@ -2856,24 +2912,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let c_arc2 = cfg_arc.clone();
         let s_idx2 = sel_idx.clone();
         settings_window.on_move_item_down(move |item_idx| {
-            let i = item_idx as usize;
-            let c_idx = s_idx2.load(Ordering::SeqCst);
-            let mut cfg = c_arc2.lock().unwrap();
-            if let Some(cont) = cfg.containers.get_mut(c_idx) {
-                if i < cont.items.len() {
-                    let cur_col = cont.items[i].column;
-                    if let Some(next_idx) = ((i + 1)..cont.items.len()).find(|&k| cont.items[k].column == cur_col) {
-                        cont.items.swap(i, next_idx);
-                        save_config(&cfg);
-                        if let Some(sui) = s_weak2.upgrade() {
-                            sui.set_selected_item_index(next_idx as i32);
-                            refresh_settings_ui(&sui, &cfg, c_idx);
-                        }
-                        if let Some(bui) = b_weak2.upgrade() {
-                            refresh_bar_ui(&bui, &cfg);
+            if item_idx >= 0 {
+                let i = item_idx as usize;
+                let c_idx = s_idx2.load(Ordering::SeqCst);
+                let mut cfg = c_arc2.lock().unwrap();
+                if let Some(cont) = cfg.containers.get_mut(c_idx)
+                    && i < cont.items.len() {
+                        let cur_col = cont.items[i].column;
+                        if let Some(next_idx) = ((i + 1)..cont.items.len()).find(|&k| cont.items[k].column == cur_col) {
+                            cont.items.swap(i, next_idx);
+                            save_config(&cfg);
+                            refresh_hotkeys_for_app(&cfg);
+                            if let Some(sui) = s_weak2.upgrade() {
+                                sui.set_selected_item_index(next_idx as i32);
+                                refresh_settings_ui(&sui, &cfg, c_idx);
+                            }
+                            if let Some(bui) = b_weak2.upgrade() {
+                                refresh_bar_ui(&bui, &cfg);
+                            }
                         }
                     }
-                }
             }
         });
 
@@ -2882,30 +2940,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let c_arc3 = cfg_arc.clone();
         let s_idx3 = sel_idx.clone();
         settings_window.on_move_item_column(move |item_idx, delta| {
-            let i = item_idx as usize;
-            let c_idx = s_idx3.load(Ordering::SeqCst);
-            let mut cfg = c_arc3.lock().unwrap();
-            if let Some(cont) = cfg.containers.get_mut(c_idx) {
-                if i < cont.items.len() {
-                    let max_col = cont.columns_count.clamp(1, 10) - 1;
-                    let cur_col = cont.items[i].column.min(max_col);
-                    let new_col = if delta < 0 {
-                        cur_col.saturating_sub(1)
-                    } else {
-                        (cur_col + 1).min(max_col)
-                    };
-                    if new_col != cur_col {
-                        cont.items[i].column = new_col;
-                        save_config(&cfg);
-                        if let Some(sui) = s_weak3.upgrade() {
-                            sui.set_item_edit_column(new_col as i32);
-                            refresh_settings_ui(&sui, &cfg, c_idx);
-                        }
-                        if let Some(bui) = b_weak3.upgrade() {
-                            refresh_bar_ui(&bui, &cfg);
+            if item_idx >= 0 {
+                let i = item_idx as usize;
+                let c_idx = s_idx3.load(Ordering::SeqCst);
+                let mut cfg = c_arc3.lock().unwrap();
+                if let Some(cont) = cfg.containers.get_mut(c_idx)
+                    && i < cont.items.len() {
+                        let max_col = cont.columns_count.clamp(1, 10) - 1;
+                        let cur_col = cont.items[i].column.min(max_col);
+                        let new_col = if delta < 0 {
+                            cur_col.saturating_sub(1)
+                        } else {
+                            (cur_col + 1).min(max_col)
+                        };
+                        if new_col != cur_col {
+                            cont.items[i].column = new_col;
+                            save_config(&cfg);
+                            if let Some(sui) = s_weak3.upgrade() {
+                                sui.set_item_edit_column(new_col as i32);
+                                refresh_settings_ui(&sui, &cfg, c_idx);
+                            }
+                            if let Some(bui) = b_weak3.upgrade() {
+                                refresh_bar_ui(&bui, &cfg);
+                            }
                         }
                     }
-                }
             }
         });
     }
@@ -2918,27 +2977,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let sel_idx = selected_container_idx.clone();
 
         settings_window.on_move_item_to_container(move |item_idx, target_cont_idx| {
-            if let Some(sui) = settings_weak.upgrade() {
-                let src_c = sel_idx.load(Ordering::SeqCst);
-                let dst_c = target_cont_idx as usize;
-                let i_idx = item_idx as usize;
+            if item_idx >= 0 && target_cont_idx >= 0
+                && let Some(sui) = settings_weak.upgrade() {
+                    let src_c = sel_idx.load(Ordering::SeqCst);
+                    let dst_c = target_cont_idx as usize;
+                    let i_idx = item_idx as usize;
 
-                let mut cfg = cfg_arc.lock().unwrap();
-                if src_c != dst_c && src_c < cfg.containers.len() && dst_c < cfg.containers.len() {
-                    if i_idx < cfg.containers[src_c].items.len() {
-                        let mut itm = cfg.containers[src_c].items.remove(i_idx);
-                        let dst_max_cols = cfg.containers[dst_c].columns_count.clamp(1, 10);
-                        itm.column = itm.column.min(dst_max_cols - 1);
-                        cfg.containers[dst_c].items.push(itm);
-                        save_config(&cfg);
-                        sui.set_show_item_editor(false);
-                        refresh_settings_ui(&sui, &cfg, src_c);
-                        if let Some(bui) = bar_weak.upgrade() {
-                            refresh_bar_ui(&bui, &cfg);
+                    let mut cfg = cfg_arc.lock().unwrap();
+                    if src_c != dst_c && src_c < cfg.containers.len() && dst_c < cfg.containers.len()
+                        && i_idx < cfg.containers[src_c].items.len() {
+                            let mut itm = cfg.containers[src_c].items.remove(i_idx);
+                            let dst_max_cols = cfg.containers[dst_c].columns_count.clamp(1, 10);
+                            itm.column = itm.column.min(dst_max_cols - 1);
+                            cfg.containers[dst_c].items.push(itm);
+                            save_config(&cfg);
+                            refresh_hotkeys_for_app(&cfg);
+                            sui.set_show_item_editor(false);
+                            refresh_settings_ui(&sui, &cfg, src_c);
+                            if let Some(bui) = bar_weak.upgrade() {
+                                refresh_bar_ui(&bui, &cfg);
+                            }
                         }
-                    }
                 }
-            }
         });
     }
 
@@ -2950,29 +3010,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let sel_idx = selected_container_idx.clone();
 
         settings_window.on_duplicate_item(move |item_idx, target_cont_idx| {
-            if let Some(sui) = settings_weak.upgrade() {
-                let src_c = sel_idx.load(Ordering::SeqCst);
-                let dst_c = target_cont_idx as usize;
-                let i_idx = item_idx as usize;
+            if item_idx >= 0 && target_cont_idx >= 0
+                && let Some(sui) = settings_weak.upgrade() {
+                    let src_c = sel_idx.load(Ordering::SeqCst);
+                    let dst_c = target_cont_idx as usize;
+                    let i_idx = item_idx as usize;
 
-                let mut cfg = cfg_arc.lock().unwrap();
-                if src_c < cfg.containers.len() && dst_c < cfg.containers.len() {
-                    if let Some(orig) = cfg.containers[src_c].items.get(i_idx).cloned() {
-                        let mut duplicated = orig;
-                        duplicated.id = generate_id();
-                        duplicated.name = format!("{} (Copie)", duplicated.name);
-                        let dst_max_cols = cfg.containers[dst_c].columns_count.clamp(1, 10);
-                        duplicated.column = duplicated.column.min(dst_max_cols - 1);
-                        cfg.containers[dst_c].items.push(duplicated);
-                        save_config(&cfg);
-                        sui.set_show_item_editor(false);
-                        refresh_settings_ui(&sui, &cfg, src_c);
-                        if let Some(bui) = bar_weak.upgrade() {
-                            refresh_bar_ui(&bui, &cfg);
+                    let mut cfg = cfg_arc.lock().unwrap();
+                    if src_c < cfg.containers.len() && dst_c < cfg.containers.len()
+                        && let Some(orig) = cfg.containers[src_c].items.get(i_idx).cloned() {
+                            let mut duplicated = orig;
+                            duplicated.id = generate_id();
+                            duplicated.name = format!("{} (Copie)", duplicated.name);
+                            duplicated.hotkey_key = String::new();
+                            duplicated.hotkey_modifiers = Vec::new();
+                            let dst_max_cols = cfg.containers[dst_c].columns_count.clamp(1, 10);
+                            duplicated.column = duplicated.column.min(dst_max_cols - 1);
+                            cfg.containers[dst_c].items.push(duplicated);
+                            save_config(&cfg);
+                            refresh_hotkeys_for_app(&cfg);
+                            sui.set_show_item_editor(false);
+                            refresh_settings_ui(&sui, &cfg, src_c);
+                            if let Some(bui) = bar_weak.upgrade() {
+                                refresh_bar_ui(&bui, &cfg);
+                            }
                         }
-                    }
                 }
-            }
         });
     }
 
@@ -3074,10 +3137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         win32_utils::win32::bring_to_foreground(hwnd, cfg.settings.stay_on_top);
                     }
 
-                    let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
-                    if !tray_hwnd.is_null() {
-                        register_all_hotkeys_for_app(tray_hwnd, &cfg);
-                    }
+                    refresh_hotkeys_for_app(&cfg);
                 }
 
                 if let Some(bui) = bar_weak.upgrade() {
@@ -3105,11 +3165,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let sw = settings_window.as_weak();
         let pulse_timer = slint::Timer::default();
         pulse_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(280), move || {
-            if let Some(bui) = bw.upgrade() {
-                if bui.get_active_dropdown_idx() >= 0 {
+            if let Some(bui) = bw.upgrade()
+                && bui.get_active_dropdown_idx() >= 0 {
                     bui.set_anim_pulse(!bui.get_anim_pulse());
                 }
-            }
             if let Some(sui) = sw.upgrade() {
                 sui.set_preview_anim_pulse(!sui.get_preview_anim_pulse());
                 let txt = sui.get_pref_dropdown_hover_color();

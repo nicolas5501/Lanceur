@@ -133,8 +133,8 @@ pub mod win32 {
             }
             WM_ACTIVATE => {
                 let state = (wparam & 0xFFFF) as u32;
-                if state == WA_INACTIVE as u32 {
-                    if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
+                if state == WA_INACTIVE
+                    && STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
                         unsafe {
                             let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
                             if !progman.is_null() {
@@ -142,8 +142,7 @@ pub mod win32 {
                             }
                         }
                     }
-                }
-                return 1;
+                return 0;
             }
             WM_ERASEBKGND => {
                 // Empêche Windows d'effacer le fond avec un pinceau blanc standard
@@ -163,21 +162,22 @@ pub mod win32 {
                 let count = unsafe { DragQueryFileW(hdrop, 0xffffffff, std::ptr::null_mut(), 0) };
                 let mut files = Vec::new();
                 for i in 0..count {
-                    let mut buf = [0u16; 512];
-                    let len = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), 512) };
-                    if len > 0 {
-                        files.push(String::from_utf16_lossy(&buf[..len as usize]));
+                    let req_len = unsafe { DragQueryFileW(hdrop, i, std::ptr::null_mut(), 0) };
+                    if req_len > 0 {
+                        let mut buf = vec![0u16; (req_len + 1) as usize];
+                        let copied = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), buf.len() as u32) };
+                        if copied > 0 {
+                            files.push(String::from_utf16_lossy(&buf[..copied as usize]));
+                        }
                     }
                 }
                 unsafe { DragFinish(hdrop); }
 
-                if !files.is_empty() {
-                    if let Ok(guard) = DROP_CALLBACK.lock() {
-                        if let Some(cb) = guard.as_ref() {
+                if !files.is_empty()
+                    && let Ok(guard) = DROP_CALLBACK.lock()
+                        && let Some(cb) = guard.as_ref() {
                             cb(files, pt.x, pt.y, false);
                         }
-                    }
-                }
                 return 0;
             }
             WM_SYSCOMMAND => {
@@ -222,32 +222,30 @@ pub mod win32 {
         _uid_subclass: usize,
         _ref_data: usize,
     ) -> LRESULT {
-        match msg {
-            WM_DROPFILES => {
-                let hdrop = wparam as HDROP;
-                let mut pt = POINT { x: 0, y: 0 };
-                unsafe { DragQueryPoint(hdrop, &mut pt); }
-                let count = unsafe { DragQueryFileW(hdrop, 0xffffffff, std::ptr::null_mut(), 0) };
-                let mut files = Vec::new();
-                for i in 0..count {
-                    let mut buf = [0u16; 512];
-                    let len = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), 512) };
-                    if len > 0 {
-                        files.push(String::from_utf16_lossy(&buf[..len as usize]));
+        if msg == WM_DROPFILES {
+            let hdrop = wparam as HDROP;
+            let mut pt = POINT { x: 0, y: 0 };
+            unsafe { DragQueryPoint(hdrop, &mut pt); }
+            let count = unsafe { DragQueryFileW(hdrop, 0xffffffff, std::ptr::null_mut(), 0) };
+            let mut files = Vec::new();
+            for i in 0..count {
+                let req_len = unsafe { DragQueryFileW(hdrop, i, std::ptr::null_mut(), 0) };
+                if req_len > 0 {
+                    let mut buf = vec![0u16; (req_len + 1) as usize];
+                    let copied = unsafe { DragQueryFileW(hdrop, i, buf.as_mut_ptr(), buf.len() as u32) };
+                    if copied > 0 {
+                        files.push(String::from_utf16_lossy(&buf[..copied as usize]));
                     }
                 }
-                unsafe { DragFinish(hdrop); }
-
-                if !files.is_empty() {
-                    if let Ok(guard) = DROP_CALLBACK.lock() {
-                        if let Some(cb) = guard.as_ref() {
-                            cb(files, pt.x, pt.y, true);
-                        }
-                    }
-                }
-                return 0;
             }
-            _ => {}
+            unsafe { DragFinish(hdrop); }
+
+            if !files.is_empty()
+                && let Ok(guard) = DROP_CALLBACK.lock()
+                    && let Some(cb) = guard.as_ref() {
+                        cb(files, pt.x, pt.y, true);
+                    }
+            return 0;
         }
         unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
     }
@@ -269,7 +267,7 @@ pub mod win32 {
     }
 
     /// Applique les styles ToolWindow, NoActivate et configure le mode stay_on_top
-    pub fn setup_bar_window_styles(hwnd: HWND, stay_on_top: bool, floating: bool) {
+    pub fn setup_bar_window_styles(hwnd: HWND, stay_on_top: bool, _floating: bool) {
         if hwnd.is_null() {
             return;
         }
@@ -470,11 +468,10 @@ pub mod win32 {
         }
         unsafe {
             let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-            if GetWindowRect(hwnd, &mut rect) != 0 {
-                if rect.left < -10000 || rect.top < -10000 {
+            if GetWindowRect(hwnd, &mut rect) != 0
+                && (rect.left < -10000 || rect.top < -10000) {
                     return false;
                 }
-            }
         }
         BAR_WINDOW_VISIBLE.load(Ordering::SeqCst)
     }
@@ -596,6 +593,7 @@ pub mod win32 {
     }
 
     /// Repositionne et redimensionne strictement la fenêtre sans bloquer les fenêtres en arrière-plan
+    #[allow(clippy::too_many_arguments)]
     pub fn position_bar_window(
         hwnd: HWND,
         position: &str,
@@ -609,6 +607,7 @@ pub mod win32 {
         if hwnd.is_null() {
             return;
         }
+        STAY_ON_TOP_ENABLED.store(stay_on_top, Ordering::SeqCst);
         let (work_x, work_y, work_w, work_h) = get_work_area();
         let current_h = if is_expanded { work_h } else { bar_h.min(work_h) };
 
@@ -686,7 +685,7 @@ pub mod win32 {
         }
     }
 
-    fn parse_virtual_key(key: &str) -> u32 {
+    pub(crate) fn parse_virtual_key(key: &str) -> u32 {
         match key.to_uppercase().as_str() {
             "SPACE" => VK_SPACE as u32,
             "RETURN" | "ENTER" => VK_RETURN as u32,
@@ -768,9 +767,7 @@ pub mod win32 {
 
             let tip_wide = to_wide_null(tooltip);
             let copy_len = tip_wide.len().min(nid.szTip.len() - 1);
-            for i in 0..copy_len {
-                nid.szTip[i] = tip_wide[i];
-            }
+            nid.szTip[..copy_len].copy_from_slice(&tip_wide[..copy_len]);
 
             Shell_NotifyIconW(NIM_ADD, &nid) != 0
         }
@@ -831,8 +828,8 @@ pub mod win32 {
             PostMessageW(hwnd, WM_NULL, 0, 0);
             DestroyMenu(menu);
 
-            // Restaure immédiatement le focus à la fenêtre précédente
-            if !prev_foreground.is_null() && prev_foreground != hwnd {
+            // Restaure le focus à la fenêtre précédente uniquement si le menu a été fermé sans sélection
+            if cmd_selected == 0 && !prev_foreground.is_null() && prev_foreground != hwnd {
                 SetForegroundWindow(prev_foreground);
             }
 
@@ -924,7 +921,7 @@ pub mod win32 {
     }
 
     #[repr(C)]
-    #[allow(non_snake_case)]
+    #[allow(non_snake_case, clippy::upper_case_acronyms)]
     pub struct SHFILEINFOW {
         pub hIcon: HICON,
         pub iIcon: i32,
@@ -1019,7 +1016,19 @@ pub mod win32 {
         }
 
         unsafe {
-            windows_sys::Win32::System::Com::CoInitialize(std::ptr::null_mut());
+            struct ComScope(bool);
+            impl Drop for ComScope {
+                fn drop(&mut self) {
+                    if self.0 {
+                        unsafe {
+                            windows_sys::Win32::System::Com::CoUninitialize();
+                        }
+                    }
+                }
+            }
+
+            let hr_com = windows_sys::Win32::System::Com::CoInitialize(std::ptr::null_mut());
+            let _com_guard = ComScope(hr_com >= 0);
 
             let mut p_shell_link: *mut std::ffi::c_void = std::ptr::null_mut();
             let hr = windows_sys::Win32::System::Com::CoCreateInstance(
@@ -1107,10 +1116,10 @@ pub mod win32 {
         }
 
         // 0. Si c'est un raccourci .lnk, résoudre sa cible réelle
-        if trimmed.to_lowercase().ends_with(".lnk") {
-            if let Some((target, _)) = resolve_lnk_target(trimmed) {
-                return Some(target.to_string_lossy().to_string());
-            }
+        if trimmed.to_lowercase().ends_with(".lnk")
+            && let Some((target, _)) = resolve_lnk_target(trimmed)
+        {
+            return Some(target.to_string_lossy().to_string());
         }
 
         // 1. Si le chemin existe directement
@@ -1118,11 +1127,16 @@ pub mod win32 {
             return Some(trimmed.to_string());
         }
 
-        // 2. Si le chemin contient des arguments (ex: "C:\App\app.exe" --param)
-        if let Some((first, _)) = trimmed.split_once(' ') {
-            let candidate = first.trim_matches('"');
-            if Path::new(candidate).exists() {
-                return Some(candidate.to_string());
+        // 2. Si le chemin contient des arguments ou guillemets (ex: "C:\Program Files\App\app.exe" --param)
+        if let Some((candidate, _)) = split_target_and_args(raw_path) {
+            let p = Path::new(&candidate);
+            if p.exists() {
+                if candidate.to_lowercase().ends_with(".lnk")
+                    && let Some((lnk_target, _)) = resolve_lnk_target(&candidate)
+                {
+                    return Some(lnk_target.to_string_lossy().to_string());
+                }
+                return Some(candidate);
             }
         }
 
@@ -1287,10 +1301,8 @@ pub mod win32 {
                 let r = chunk[2];
                 chunk[0] = r;
                 chunk[2] = b;
-                if !has_alpha {
-                    if chunk[0] > 0 || chunk[1] > 0 || chunk[2] > 0 {
-                        chunk[3] = 255;
-                    }
+                if !has_alpha && (chunk[0] > 0 || chunk[1] > 0 || chunk[2] > 0) {
+                    chunk[3] = 255;
                 }
             }
 
@@ -1351,13 +1363,10 @@ pub mod win32 {
                     || name_str.starts_with(&format!("{}.", stem))
                     || (!raw_stem.is_empty() && (name_str.starts_with(&format!("{}_", raw_stem)) || name_str.starts_with(&format!("{}.", raw_stem)))))
                     && name_str.ends_with(".png")
-                {
-                    if let Ok(meta) = entry.metadata() {
-                        if meta.len() > 0 {
+                    && let Ok(meta) = entry.metadata()
+                        && meta.len() > 0 {
                             return Some(entry.path());
                         }
-                    }
-                }
             }
         }
 
@@ -1393,11 +1402,10 @@ pub mod win32 {
                 return None;
             }
 
-            if let Some(img) = hicon_to_rgba_image(hicon) {
-                if img.save(&cache_file).is_ok() {
+            if let Some(img) = hicon_to_rgba_image(hicon)
+                && img.save(&cache_file).is_ok() {
                     return Some(cache_file);
                 }
-            }
 
             None
         }
@@ -1406,6 +1414,7 @@ pub mod win32 {
     /// Boîte de dialogue native Windows pour choisir une couleur avec palette et pipette
     pub fn pick_color_dialog(initial_hex: &str) -> Option<String> {
         #[repr(C)]
+        #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
         struct CHOOSECOLORW {
             l_struct_size: u32,
             hwnd_owner: HWND,
@@ -1509,6 +1518,7 @@ pub mod win32 {
     }
 
     #[repr(C)]
+    #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
     struct OPENFILENAMEW {
         l_struct_size: u32,
         hwnd_owner: HWND,
@@ -1607,18 +1617,26 @@ pub mod win32 {
     pub const IDM_ITEM_DELETE: usize = 2;
 
     /// Découpe une chaîne en (exécutable, arguments) si elle contient des guillemets ou des espaces
-    fn split_target_and_args(s: &str) -> Option<(String, String)> {
+    pub(crate) fn split_target_and_args(s: &str) -> Option<(String, String)> {
         let trimmed = s.trim();
-        if trimmed.starts_with('"') {
-            if let Some(end_quote) = trimmed[1..].find('"') {
-                let exe = &trimmed[1..=end_quote];
-                let args = trimmed[end_quote + 2..].trim();
+        if let Some(stripped) = trimmed.strip_prefix('"') {
+            if let Some(end_quote) = stripped.find('"') {
+                let exe = &stripped[..end_quote];
+                let args = stripped[end_quote + 1..].trim();
                 return Some((exe.to_string(), args.to_string()));
             }
-        } else if let Some(space_idx) = trimmed.find(' ') {
-            let exe = &trimmed[..space_idx];
-            let args = trimmed[space_idx + 1..].trim();
-            if Path::new(exe).exists() {
+        } else {
+            // Pour une chaîne sans guillemets contenant des espaces,
+            // chercher le plus long préfixe valide qui existe comme fichier sur disque
+            let mut best: Option<(&str, &str)> = None;
+            for (space_idx, _) in trimmed.match_indices(' ') {
+                let candidate = &trimmed[..space_idx];
+                if Path::new(candidate).exists() {
+                    let args = trimmed[space_idx + 1..].trim();
+                    best = Some((candidate, args));
+                }
+            }
+            if let Some((exe, args)) = best {
                 return Some((exe.to_string(), args.to_string()));
             }
         }
@@ -1638,18 +1656,16 @@ pub mod win32 {
         }
 
         // Si c'est un raccourci .lnk, tenter d'extraire son dossier de travail ou le parent de sa cible
-        if clean.to_lowercase().ends_with(".lnk") {
-            if let Some((target_path, _args, work_dir)) = resolve_lnk_target_full(clean) {
+        if clean.to_lowercase().ends_with(".lnk")
+            && let Some((target_path, _args, work_dir)) = resolve_lnk_target_full(clean) {
                 if !work_dir.as_os_str().is_empty() && work_dir.exists() && work_dir.is_dir() {
                     return Some(work_dir);
                 }
-                if let Some(parent) = target_path.parent() {
-                    if parent.exists() && parent.is_dir() {
+                if let Some(parent) = target_path.parent()
+                    && parent.exists() && parent.is_dir() {
                         return Some(parent.to_path_buf());
                     }
-                }
             }
-        }
 
         // Si le chemin direct existe sur disque
         let p = Path::new(clean);
@@ -1657,23 +1673,30 @@ pub mod win32 {
             if p.is_dir() {
                 return Some(p.to_path_buf());
             }
-            if let Some(parent) = p.parent() {
-                if parent.exists() && parent.is_dir() {
+            if let Some(parent) = p.parent()
+                && parent.exists() && parent.is_dir() {
                     return Some(parent.to_path_buf());
                 }
-            }
         }
 
         // Cas où target contient des guillemets ou des arguments (ex: "C:\app.exe" -arg)
         if let Some((exe_part, _)) = split_target_and_args(clean) {
+            if exe_part.to_lowercase().ends_with(".lnk")
+                && let Some((target_path, _args, work_dir)) = resolve_lnk_target_full(&exe_part) {
+                    if !work_dir.as_os_str().is_empty() && work_dir.exists() && work_dir.is_dir() {
+                        return Some(work_dir);
+                    }
+                    if let Some(parent) = target_path.parent()
+                        && parent.exists() && parent.is_dir() {
+                            return Some(parent.to_path_buf());
+                        }
+                }
             let p_exe = Path::new(&exe_part);
-            if p_exe.exists() {
-                if let Some(parent) = p_exe.parent() {
-                    if parent.exists() && parent.is_dir() {
+            if p_exe.exists()
+                && let Some(parent) = p_exe.parent()
+                    && parent.exists() && parent.is_dir() {
                         return Some(parent.to_path_buf());
                     }
-                }
-            }
         }
 
         None
@@ -1682,10 +1705,29 @@ pub mod win32 {
     /// Ouvre un fichier, dossier, application ou URL avec le programme par défaut de Windows,
     /// en transmettant son répertoire de travail (Working Directory) réel et ses arguments éventuels
     pub fn open_target(target: &str, args: &str) -> bool {
-        let clean = target.trim().trim_matches('"');
-        if clean.is_empty() {
+        let trimmed = target.trim();
+        if trimmed.is_empty() {
             return false;
         }
+
+        // Si la cible brute n'existe pas en tant que fichier/dossier tel quel,
+        // vérifier si elle contient à la fois un exécutable valide et des arguments
+        let (actual_target, combined_args) = if !Path::new(trimmed.trim_matches('"')).exists()
+            && let Some((exe_part, inline_args)) = split_target_and_args(trimmed)
+        {
+            let comb = if args.trim().is_empty() {
+                inline_args
+            } else if inline_args.is_empty() {
+                args.trim().to_string()
+            } else {
+                format!("{} {}", inline_args, args.trim())
+            };
+            (exe_part, comb)
+        } else {
+            (trimmed.trim_matches('"').to_string(), args.trim().to_string())
+        };
+
+        let clean = actual_target.as_str();
 
         // Si le chemin est un dossier local ou un partage réseau UNC, explorer.exe est le gestionnaire naturel
         let is_dir = Path::new(clean).is_dir()
@@ -1694,9 +1736,8 @@ pub mod win32 {
         let target_wide = to_wide_null(clean);
         let operation = to_wide_null("open");
 
-        let args_clean = args.trim();
-        let args_wide = if !args_clean.is_empty() {
-            Some(to_wide_null(args_clean))
+        let args_wide = if !combined_args.is_empty() {
+            Some(to_wide_null(&combined_args))
         } else {
             None
         };
@@ -1716,7 +1757,7 @@ pub mod win32 {
                 target_wide.as_ptr(),
                 if let Some(ref a) = args_wide { a.as_ptr() } else { std::ptr::null() },
                 if let Some(ref d) = dir_wide { d.as_ptr() } else { std::ptr::null() },
-                windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL as i32,
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
             );
             (res as isize) > 32
         };
@@ -1726,11 +1767,10 @@ pub mod win32 {
         }
 
         // Repli spécial pour dossiers ou chemins UNC si ShellExecuteW n'a pas pu ouvrir
-        if is_dir {
-            if std::process::Command::new("explorer").arg(clean).spawn().is_ok() {
+        if is_dir
+            && std::process::Command::new("explorer").arg(clean).spawn().is_ok() {
                 return true;
             }
-        }
 
         false
     }
@@ -1741,7 +1781,7 @@ pub mod win32 {
     }
 
     /// Affiche le menu contextuel natif d'un item du bandeau (Modifier / Supprimer)
-    pub fn show_item_context_menu(hwnd: windows_sys::Win32::Foundation::HWND, item_name: &str) -> usize {
+    pub fn show_item_context_menu(hwnd: windows_sys::Win32::Foundation::HWND, _item_name: &str) -> usize {
         use windows_sys::Win32::UI::WindowsAndMessaging::*;
         use windows_sys::Win32::Foundation::POINT;
         unsafe {
@@ -1778,6 +1818,10 @@ pub mod win32 {
                 PostMessageW(hwnd, WM_NULL, 0, 0);
             }
             DestroyMenu(menu);
+
+            if cmd_selected == 0 && !prev_foreground.is_null() && prev_foreground != hwnd {
+                SetForegroundWindow(prev_foreground);
+            }
 
             cmd_selected
         }
@@ -1828,4 +1872,51 @@ pub mod win32 {
     pub fn resolve_lnk_target(_lnk: &str) -> Option<(PathBuf, String)> { None }
     pub fn resolve_lnk_target_full(_lnk: &str) -> Option<(PathBuf, String, PathBuf)> { None }
     pub fn get_target_working_directory(_target: &str) -> Option<PathBuf> { None }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::win32::*;
+
+    #[test]
+    fn test_to_wide_null() {
+        let wide = to_wide_null("Hello");
+        assert_eq!(wide.len(), 6);
+        assert_eq!(wide[5], 0);
+        assert_eq!(wide[0], 'H' as u16);
+    }
+
+    #[test]
+    fn test_split_target_and_args_quoted() {
+        let input = r#""C:\Program Files\App\app.exe" --debug -v"#;
+        let res = split_target_and_args(input);
+        assert_eq!(res, Some((r#"C:\Program Files\App\app.exe"#.to_string(), "--debug -v".to_string())));
+    }
+
+    #[test]
+    fn test_split_target_and_args_quoted_no_args() {
+        let input = r#""C:\MyApp\app.exe""#;
+        let res = split_target_and_args(input);
+        assert_eq!(res, Some((r#"C:\MyApp\app.exe"#.to_string(), String::new())));
+    }
+
+    #[test]
+    fn test_parse_virtual_key_case_insensitivity() {
+        let vk_a = parse_virtual_key("a");
+        let vk_upper_a = parse_virtual_key("A");
+        assert_eq!(vk_a, 0x41);
+        assert_eq!(vk_upper_a, 0x41);
+
+        assert_eq!(parse_virtual_key("space"), 0x20);
+        assert_eq!(parse_virtual_key("SPACE"), 0x20);
+        assert_eq!(parse_virtual_key("Enter"), 0x0D);
+        assert_eq!(parse_virtual_key("F1"), 0x70);
+    }
+
+    #[test]
+    fn test_working_directory_for_urls() {
+        assert!(get_target_working_directory("https://www.google.com").is_none());
+        assert!(get_target_working_directory("http://localhost:8080").is_none());
+        assert!(get_target_working_directory("mailto:test@example.com").is_none());
+    }
 }

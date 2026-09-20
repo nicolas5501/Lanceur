@@ -6,12 +6,20 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
     pub settings: AppSettings,
     pub containers: Vec<ContainerConfig>,
 }
 
+impl Default for AppConfig {
+    fn default() -> Self {
+        default_config()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppSettings {
     pub bar_position: String,          // "Top", "Bottom", "Floating"
     #[serde(default = "default_alignment")]
@@ -75,7 +83,20 @@ impl Default for AppSettings {
     }
 }
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub fn generate_id() -> String {
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let count = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{}-{}", d.as_secs(), d.subsec_nanos(), count)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ContainerConfig {
     pub id: String,
     pub name: String,
@@ -100,7 +121,30 @@ pub struct ContainerConfig {
     pub row: usize, // 0 = Ligne 1, 1 = Ligne 2, etc.
     #[serde(default = "default_columns_count")]
     pub columns_count: usize, // 1 à 10 colonnes (1 par défaut)
+    #[serde(default)]
     pub items: Vec<LauncherItem>,
+}
+
+impl Default for ContainerConfig {
+    fn default() -> Self {
+        Self {
+            id: generate_id(),
+            name: "Nouveau".to_string(),
+            icon: "📁".to_string(),
+            width: 0.0,
+            order: 0,
+            display_mode: default_display_mode(),
+            icon_type: default_icon_type(),
+            icon_path: String::new(),
+            bg_color: String::new(),
+            text_color: String::new(),
+            hotkey_modifiers: Vec::new(),
+            hotkey_key: String::new(),
+            row: 0,
+            columns_count: 1,
+            items: Vec::new(),
+        }
+    }
 }
 
 fn default_icon_type() -> String {
@@ -116,12 +160,18 @@ fn default_columns_count() -> usize {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LauncherItem {
     pub id: String,
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub target: String,
+    #[serde(default = "default_icon_type")]
     pub icon_type: String,  // "emoji" ou "extracted"
+    #[serde(default = "default_item_icon_value")]
     pub icon_value: String, // emoji char ou chemin d'icône png en cache
+    #[serde(default)]
     pub args: String,
     #[serde(default)]
     pub bg_color: String,   // Couleur personnalisée au survol
@@ -135,11 +185,26 @@ pub struct LauncherItem {
     pub column: usize,      // 0 = Colonne 1, 1 = Colonne 2, etc.
 }
 
-pub fn generate_id() -> String {
-    let d = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}-{}", d.as_secs(), d.subsec_nanos())
+impl Default for LauncherItem {
+    fn default() -> Self {
+        Self {
+            id: generate_id(),
+            name: String::new(),
+            target: String::new(),
+            icon_type: default_icon_type(),
+            icon_value: default_item_icon_value(),
+            args: String::new(),
+            bg_color: String::new(),
+            text_color: String::new(),
+            hotkey_modifiers: Vec::new(),
+            hotkey_key: String::new(),
+            column: 0,
+        }
+    }
+}
+
+fn default_item_icon_value() -> String {
+    "🚀".to_string()
 }
 
 pub fn config_path() -> PathBuf {
@@ -149,9 +214,7 @@ pub fn config_path() -> PathBuf {
     if let Ok(mut exe) = std::env::current_exe() {
         exe.pop();
         let p = exe.join("launcher_config.json");
-        if p.exists() {
-            return p;
-        }
+        return p;
     }
     PathBuf::from("launcher_config.json")
 }
@@ -269,8 +332,8 @@ pub fn default_config() -> AppConfig {
 
 pub fn load_config() -> AppConfig {
     let path = config_path();
-    if path.exists() {
-        if let Ok(content) = fs::read_to_string(&path) {
+    if path.exists()
+        && let Ok(content) = fs::read_to_string(&path) {
             let clean = content.trim_start_matches('\u{feff}');
             match serde_json::from_str::<AppConfig>(clean) {
                 Ok(cfg) => return cfg,
@@ -282,7 +345,6 @@ pub fn load_config() -> AppConfig {
                 }
             }
         }
-    }
 
     let def = default_config();
     save_config(&def);
@@ -291,6 +353,63 @@ pub fn load_config() -> AppConfig {
 
 pub fn save_config(config: &AppConfig) {
     if let Ok(json) = serde_json::to_string_pretty(config) {
-        let _ = fs::write(config_path(), json);
+        let path = config_path();
+        let tmp_path = path.with_extension("tmp");
+        if fs::write(&tmp_path, &json).is_ok() {
+            if fs::rename(&tmp_path, &path).is_err() {
+                let _ = fs::write(&path, &json);
+                let _ = fs::remove_file(&tmp_path);
+            }
+        } else {
+            let _ = fs::write(&path, json);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_generate_id_uniqueness() {
+        let count = 10_000;
+        let mut ids = HashSet::with_capacity(count);
+        for _ in 0..count {
+            let id = generate_id();
+            assert!(ids.insert(id), "Duplicate ID generated!");
+        }
+    }
+
+    #[test]
+    fn test_default_config_serde_roundtrip() {
+        let cfg = default_config();
+        let json = serde_json::to_string_pretty(&cfg).expect("Serialization failed");
+        let parsed: AppConfig = serde_json::from_str(&json).expect("Deserialization failed");
+        assert_eq!(parsed.settings.bar_position, cfg.settings.bar_position);
+        assert_eq!(parsed.containers.len(), cfg.containers.len());
+    }
+
+    #[test]
+    fn test_legacy_or_sparse_json_deserialization() {
+        let sparse_json = r#"{
+            "settings": {
+                "bar_position": "Bottom"
+            },
+            "containers": [
+                {
+                    "id": "c1",
+                    "name": "Minimal"
+                }
+            ]
+        }"#;
+        let parsed: AppConfig = serde_json::from_str(sparse_json).expect("Sparse JSON should parse with defaults");
+        assert_eq!(parsed.settings.bar_position, "Bottom");
+        assert_eq!(parsed.settings.rows_count, 1);
+        assert_eq!(parsed.settings.containers_alignment, "Left");
+        assert_eq!(parsed.containers.len(), 1);
+        assert_eq!(parsed.containers[0].name, "Minimal");
+        assert_eq!(parsed.containers[0].columns_count, 1);
+        assert!(parsed.containers[0].items.is_empty());
     }
 }
