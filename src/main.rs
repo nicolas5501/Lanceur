@@ -29,6 +29,15 @@ fn parse_hex_color(hex_str: &str, default: Color) -> Color {
         ) {
             return Color::from_argb_u8(255, r * 17, g * 17, b * 17);
         }
+    } else if s.len() == 4 {
+        if let (Ok(r), Ok(g), Ok(b), Ok(a)) = (
+            u8::from_str_radix(&s[0..1], 16),
+            u8::from_str_radix(&s[1..2], 16),
+            u8::from_str_radix(&s[2..3], 16),
+            u8::from_str_radix(&s[3..4], 16),
+        ) {
+            return Color::from_argb_u8(a * 17, r * 17, g * 17, b * 17);
+        }
     } else if s.len() == 6 {
         if let Ok(val) = u32::from_str_radix(s, 16) {
             let r = ((val >> 16) & 0xFF) as u8;
@@ -337,18 +346,14 @@ fn hide_bar_window() {
 fn hide_bar_window() {}
 
 #[cfg(windows)]
-fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
+fn show_bar_window(bar: &BarWindow, cfg: &AppConfig, is_expanded: bool) {
     win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(false, Ordering::SeqCst);
     win32_utils::win32::BAR_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
     let hwnd = win32_utils::win32::find_bar_hwnd();
     if !hwnd.is_null() {
-        let previous_foreground = unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
-        };
-        let cfg = load_config();
-        let total_h = get_total_bar_height(&cfg);
+        let total_h = get_total_bar_height(cfg);
 
-        refresh_bar_ui(bar, &cfg);
+        refresh_bar_ui(bar, cfg);
         if !is_expanded {
             bar.set_active_dropdown_idx(-1);
         }
@@ -388,9 +393,8 @@ fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
 }
 
 #[cfg(not(windows))]
-fn show_bar_window(bar: &BarWindow, is_expanded: bool) {
-    let cfg = load_config();
-    refresh_bar_ui(bar, &cfg);
+fn show_bar_window(bar: &BarWindow, cfg: &AppConfig, is_expanded: bool) {
+    refresh_bar_ui(bar, cfg);
     if !is_expanded {
         bar.set_active_dropdown_idx(-1);
     }
@@ -905,7 +909,11 @@ fn find_container_at_coordinates(cfg: &AppConfig, x: i32, y: i32, bar_total_widt
         _ => left_pad,
     };
 
+    let initial_start_x = start_x;
     let drop_xf = x.max(0) as f32;
+    if drop_xf < initial_start_x {
+        return row_containers.first().map(|(idx, _)| *idx).unwrap_or(0);
+    }
     for (orig_idx, w) in estimated_widths {
         if drop_xf >= start_x && drop_xf <= (start_x + w + 4.0) {
             return orig_idx;
@@ -1211,6 +1219,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
+                    WM_DESTROY => {
+                        win32_utils::win32::remove_tray_icon(hwnd);
+                        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostQuitMessage(0); }
+                        return 0;
+                    }
                     _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
                 }
                 0
@@ -1263,9 +1276,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Définition des handlers
                 let bw_for_toggle = bar_weak.clone();
                 let is_vis_for_toggle = is_visible_clone.clone();
+                let cfg_for_toggle = app_cfg_clone.clone();
                 let toggle_bar = Box::new(move || {
                     let bw = bw_for_toggle.clone();
                     let is_vis = is_vis_for_toggle.clone();
+                    let cfg_arc = cfg_for_toggle.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = bw.upgrade() {
                             let is_fore = win32_utils::win32::is_bar_window_foreground();
@@ -1274,7 +1289,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 hide_bar_window();
                                 is_vis.store(false, Ordering::SeqCst);
                             } else {
-                                show_bar_window(&ui, false);
+                                let cfg = cfg_arc.lock().unwrap();
+                                show_bar_window(&ui, &cfg, false);
                                 is_vis.store(true, Ordering::SeqCst);
                             }
                         }
@@ -1298,6 +1314,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         win32_utils::win32::IDM_SHOW_HIDE => {
                             let bw = bw_for_cmd.clone();
                             let is_vis = is_vis_for_cmd.clone();
+                            let cfg_arc = cfg_for_cmd.clone();
                             let _ = slint::invoke_from_event_loop(move || {
                                 if let Some(ui) = bw.upgrade() {
                                     let is_fore = win32_utils::win32::is_bar_window_foreground();
@@ -1306,7 +1323,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         hide_bar_window();
                                         is_vis.store(false, Ordering::SeqCst);
                                     } else {
-                                        show_bar_window(&ui, false);
+                                        let cfg = cfg_arc.lock().unwrap();
+                                        show_bar_window(&ui, &cfg, false);
                                         is_vis.store(true, Ordering::SeqCst);
                                     }
                                 }
@@ -1357,6 +1375,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             save_config(&c);
                         }
                         win32_utils::win32::IDM_QUIT => {
+                            let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
+                            if !tray_hwnd.is_null() {
+                                win32_utils::win32::remove_tray_icon(tray_hwnd);
+                            }
                             let _ = slint::invoke_from_event_loop(move || {
                                 let _ = slint::quit_event_loop();
                             });
@@ -1373,10 +1395,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if hk_id == win32_utils::win32::MAIN_HOTKEY_ID {
                         let bw = bw_for_hk.clone();
                         let is_vis = is_vis_for_hk.clone();
+                        let cfg_arc = cfg_for_hk.clone();
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = bw.upgrade() {
                                 // Toujours afficher et amener au premier plan sans basculer en masquage
-                                show_bar_window(&ui, false);
+                                let cfg = cfg_arc.lock().unwrap();
+                                show_bar_window(&ui, &cfg, false);
                                 is_vis.store(true, Ordering::SeqCst);
                             }
                         });
@@ -1390,7 +1414,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(ui) = bw.upgrade() {
                                 let cfg_guard = cfg_clone.lock().unwrap();
                                 if cont_idx >= 0 && (cont_idx as usize) < cfg_guard.containers.len() {
-                                    show_bar_window(&ui, true);
+                                    show_bar_window(&ui, &cfg_guard, true);
                                     is_vis.store(true, Ordering::SeqCst);
                                     ui.set_active_dropdown_idx(cont_idx);
                                     ui.invoke_dropdown_state_changed(true);
@@ -2334,7 +2358,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         sui.set_item_edit_bg_col(i_bg);
                         sui.set_item_edit_text_col(i_txt);
                         sui.set_item_target_container_idx(c_idx as i32);
-                        sui.set_item_edit_column(itm.column.min(cont.columns_count.saturating_sub(1)) as i32);
+                        sui.set_item_edit_column(itm.column.min(cont.columns_count.clamp(1, 10) - 1) as i32);
                         sui.set_item_edit_mod_ctrl(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("control") || m.eq_ignore_ascii_case("ctrl")));
                         sui.set_item_edit_mod_alt(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("alt")));
                         sui.set_item_edit_mod_shift(itm.hotkey_modifiers.iter().any(|m| m.eq_ignore_ascii_case("shift")));
@@ -3226,6 +3250,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // l'event loop ne quitte QUE sur un appel explicite à slint::quit_event_loop().
     // Cela permet d'utiliser SW_HIDE librement sans risquer de terminer l'appli.
     slint::run_event_loop()?;
+
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow;
+        let tray_hwnd = win32_utils::win32::SYSTRAY_HWND.load(Ordering::SeqCst) as HWND;
+        if !tray_hwnd.is_null() {
+            win32_utils::win32::remove_tray_icon(tray_hwnd);
+            unsafe {
+                DestroyWindow(tray_hwnd);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -3258,6 +3296,9 @@ mod main_tests {
         let c3 = parse_hex_color("#fff", fallback);
         assert_eq!(c3, Color::from_argb_u8(255, 255, 255, 255));
 
+        let c4 = parse_hex_color("#ffff", fallback);
+        assert_eq!(c4, Color::from_argb_u8(255, 255, 255, 255));
+
         let c6 = parse_hex_color("#1e293b", fallback);
         assert_eq!(c6, Color::from_argb_u8(255, 0x1e, 0x29, 0x3b));
 
@@ -3266,5 +3307,18 @@ mod main_tests {
 
         let cinvalid = parse_hex_color("not_a_color", fallback);
         assert_eq!(cinvalid, fallback);
+    }
+
+    #[test]
+    fn test_find_container_at_coordinates() {
+        let cfg = default_config();
+        // Par défaut 2 conteneurs sur la ligne 0 : conteneur 0 et conteneur 1
+        // Dépose à l'extrême gauche (x = 0) doit cibler le conteneur 0
+        let left_target = find_container_at_coordinates(&cfg, 0, 10, 1920.0, 36.0);
+        assert_eq!(left_target, 0);
+
+        // Dépose à l'extrême droite (x = 1900) doit cibler le conteneur 1
+        let right_target = find_container_at_coordinates(&cfg, 1900, 10, 1920.0, 36.0);
+        assert_eq!(right_target, 1);
     }
 }

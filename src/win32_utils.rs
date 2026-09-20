@@ -762,9 +762,12 @@ pub mod win32 {
             "F23" => 0x86,
             "F24" => 0x87,
             s if s.chars().count() == 1 => {
-                let c = s.chars().next().unwrap();
-                if c.is_ascii_alphanumeric() {
-                    c.to_ascii_uppercase() as u32
+                if let Some(c) = s.chars().next() {
+                    if c.is_ascii_alphanumeric() {
+                        c.to_ascii_uppercase() as u32
+                    } else {
+                        0
+                    }
                 } else {
                     0
                 }
@@ -878,7 +881,7 @@ pub mod win32 {
                 HKEY_CURRENT_USER,
                 key_path.as_ptr(),
                 0,
-                KEY_ALL_ACCESS,
+                KEY_SET_VALUE | KEY_QUERY_VALUE,
                 &mut hkey,
             );
             if res != 0 {
@@ -912,7 +915,7 @@ pub mod win32 {
                     0,
                     std::ptr::null_mut(),
                     0,
-                    KEY_ALL_ACCESS,
+                    KEY_SET_VALUE | KEY_QUERY_VALUE,
                     std::ptr::null(),
                     &mut hkey_serialize,
                     &mut disposition,
@@ -1464,6 +1467,11 @@ pub mod win32 {
             let g = u32::from_str_radix(&clean_hex[2..4], 16).unwrap_or(0);
             let b = u32::from_str_radix(&clean_hex[4..6], 16).unwrap_or(0);
             r | (g << 8) | (b << 16)
+        } else if clean_hex.len() == 3 || clean_hex.len() == 4 {
+            let r = u32::from_str_radix(&clean_hex[0..1], 16).unwrap_or(0) * 17;
+            let g = u32::from_str_radix(&clean_hex[1..2], 16).unwrap_or(0) * 17;
+            let b = u32::from_str_radix(&clean_hex[2..3], 16).unwrap_or(0) * 17;
+            r | (g << 8) | (b << 16)
         } else {
             0x3b291e
         };
@@ -1497,6 +1505,7 @@ pub mod win32 {
             let cursor = LoadCursorW(std::ptr::null_mut(), IDC_CROSS);
 
             let start_time = std::time::Instant::now();
+            let mut result = None;
             loop {
                 if !cursor.is_null() {
                     SetCursor(cursor);
@@ -1504,14 +1513,14 @@ pub mod win32 {
 
                 // Annulation après 45 secondes d'inactivité
                 if start_time.elapsed().as_secs() > 45 {
-                    return None;
+                    break;
                 }
 
                 // Annulation via Echap ou Clic droit
                 if (GetAsyncKeyState(VK_ESCAPE as i32) as u16 & 0x8000) != 0
                     || (GetAsyncKeyState(VK_RBUTTON as i32) as u16 & 0x8000) != 0
                 {
-                    return None;
+                    break;
                 }
 
                 // Clic gauche : capture du pixel sous le curseur
@@ -1519,7 +1528,7 @@ pub mod win32 {
                     let mut pt = POINT { x: 0, y: 0 };
                     GetCursorPos(&mut pt);
                     let hdc = GetDC(std::ptr::null_mut());
-                    let res = if !hdc.is_null() {
+                    result = if !hdc.is_null() {
                         let pixel = GetPixel(hdc, pt.x, pt.y);
                         ReleaseDC(std::ptr::null_mut(), hdc);
                         if pixel != 0xFFFFFFFF {
@@ -1536,11 +1545,17 @@ pub mod win32 {
                     while (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0 {
                         std::thread::sleep(std::time::Duration::from_millis(15));
                     }
-                    return res;
+                    break;
                 }
 
                 std::thread::sleep(std::time::Duration::from_millis(15));
             }
+
+            let arrow = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
+            if !arrow.is_null() {
+                SetCursor(arrow);
+            }
+            result
         }
     }
 
