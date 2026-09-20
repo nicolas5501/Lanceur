@@ -36,6 +36,13 @@ pub mod win32 {
     pub const IDM_QUIT: usize = 1004;
     pub const MAIN_HOTKEY_ID: i32 = 9001;
     pub const VISIBILITY_TIMER_ID: usize = 1;
+    pub const PROGMAN_WIDE: &[u16] = &[
+        b'P' as u16, b'r' as u16, b'o' as u16, b'g' as u16, b'm' as u16, b'a' as u16, b'n' as u16, 0,
+    ];
+    pub const DEFVIEW_WIDE: &[u16] = &[
+        b'S' as u16, b'H' as u16, b'E' as u16, b'L' as u16, b'L' as u16, b'D' as u16, b'L' as u16, b'L' as u16,
+        b'_' as u16, b'D' as u16, b'e' as u16, b'f' as u16, b'V' as u16, b'i' as u16, b'e' as u16, b'w' as u16, 0,
+    ];
 
     pub fn to_wide_null(s: &str) -> Vec<u16> {
         OsStr::new(s).encode_wide().chain(Some(0)).collect()
@@ -147,17 +154,23 @@ pub mod win32 {
             }
             WM_ACTIVATE => {
                 let is_inactive = (wparam & 0xFFFF) as u32 == WA_INACTIVE;
-                if is_inactive
-                    && STAY_ON_TOP_ENABLED.load(Ordering::SeqCst)
-                    && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
-                        unsafe {
-                            let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
-                            if !progman.is_null() {
-                                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
+                if is_inactive {
+                    if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst)
+                        && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
+                            unsafe {
+                                let progman = FindWindowW(PROGMAN_WIDE.as_ptr(), std::ptr::null());
+                                if !progman.is_null() {
+                                    SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
+                                    DESKTOP_PARENT.store(progman as usize, Ordering::SeqCst);
+                                }
                             }
                         }
+                } else {
+                    unsafe {
+                        SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
+                        DESKTOP_PARENT.store(0, Ordering::SeqCst);
                     }
-                return 0;
+                }
             }
             WM_ERASEBKGND => {
                 // Empêche Windows d'effacer le fond avec un pinceau blanc standard
@@ -300,7 +313,7 @@ pub mod win32 {
             return;
         }
         unsafe {
-            let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
+            let progman = FindWindowW(PROGMAN_WIDE.as_ptr(), std::ptr::null());
             if enabled && !progman.is_null() {
                 SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
                 DESKTOP_PARENT.store(progman as usize, Ordering::SeqCst);
@@ -315,7 +328,7 @@ pub mod win32 {
     /// Architecture identique à Stardock Fences / Rainmeter Desktop Widgets.
     pub fn get_desktop_host_window() -> HWND {
         unsafe {
-            let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
+            let progman = FindWindowW(PROGMAN_WIDE.as_ptr(), std::ptr::null());
             if progman.is_null() {
                 return std::ptr::null_mut();
             }
@@ -336,7 +349,7 @@ pub mod win32 {
             let defview_in_progman = FindWindowExW(
                 progman,
                 std::ptr::null_mut(),
-                to_wide_null("SHELLDLL_DefView").as_ptr(),
+                DEFVIEW_WIDE.as_ptr(),
                 std::ptr::null(),
             );
             if !defview_in_progman.is_null() {
@@ -349,7 +362,7 @@ pub mod win32 {
                     let def_view = FindWindowExW(
                         hwnd,
                         std::ptr::null_mut(),
-                        to_wide_null("SHELLDLL_DefView").as_ptr(),
+                        DEFVIEW_WIDE.as_ptr(),
                         std::ptr::null(),
                     );
                     if !def_view.is_null() {
@@ -379,6 +392,7 @@ pub mod win32 {
         unsafe {
             // 1. Détacher temporairement de Progman pour permettre l'élévation Z-Order au premier plan
             SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
+            DESKTOP_PARENT.store(0, Ordering::SeqCst);
 
             let fore_wnd = GetForegroundWindow();
             let target_thread = if !fore_wnd.is_null() {
@@ -416,14 +430,6 @@ pub mod win32 {
 
             if attached {
                 AttachThreadInput(current_thread, target_thread, 0);
-            }
-
-            if _stay_on_top {
-                let progman = FindWindowW(to_wide_null("Progman").as_ptr(), std::ptr::null());
-                if !progman.is_null() {
-                    SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
-                    DESKTOP_PARENT.store(progman as usize, Ordering::SeqCst);
-                }
             }
         }
     }
