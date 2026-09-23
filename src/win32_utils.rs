@@ -29,6 +29,76 @@ pub mod win32 {
     pub static BAR_EXPLICITLY_HIDDEN: AtomicBool = AtomicBool::new(false);
     pub static BAR_WINDOW_VISIBLE: AtomicBool = AtomicBool::new(true);
     pub static DESKTOP_PARENT: AtomicUsize = AtomicUsize::new(0);
+    pub static BAR_BG_BRUSH: AtomicUsize = AtomicUsize::new(0);
+    pub static SETTINGS_BG_BRUSH: AtomicUsize = AtomicUsize::new(0);
+
+    pub type DisplayChangeCallback = Box<dyn Fn() + Send + Sync + 'static>;
+    pub static DISPLAY_CHANGE_CALLBACK: std::sync::Mutex<Option<DisplayChangeCallback>> = std::sync::Mutex::new(None);
+
+    pub fn set_display_change_callback<F>(cb: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        if let Ok(mut lock) = DISPLAY_CHANGE_CALLBACK.lock() {
+            *lock = Some(Box::new(cb));
+        }
+    }
+
+    /// Convertit une chaîne hexadécimale (#RRGGBB ou #RRGGBBAA) en COLORREF Win32 (0x00bbggrr)
+    pub fn hex_to_colorref(hex_str: &str, default_ref: u32) -> u32 {
+        let s = hex_str.trim().trim_start_matches('#');
+        if s.len() == 3 {
+            if let (Ok(r), Ok(g), Ok(b)) = (
+                u8::from_str_radix(&s[0..1], 16),
+                u8::from_str_radix(&s[1..2], 16),
+                u8::from_str_radix(&s[2..3], 16),
+            ) {
+                let (r, g, b) = (r * 17, g * 17, b * 17);
+                return (r as u32) | ((g as u32) << 8) | ((b as u32) << 16);
+            }
+        } else if s.len() == 4 {
+            if let (Ok(r), Ok(g), Ok(b)) = (
+                u8::from_str_radix(&s[0..1], 16),
+                u8::from_str_radix(&s[1..2], 16),
+                u8::from_str_radix(&s[2..3], 16),
+            ) {
+                let (r, g, b) = (r * 17, g * 17, b * 17);
+                return (r as u32) | ((g as u32) << 8) | ((b as u32) << 16);
+            }
+        } else if s.len() == 6 {
+            if let Ok(val) = u32::from_str_radix(s, 16) {
+                let r = ((val >> 16) & 0xFF) as u8;
+                let g = ((val >> 8) & 0xFF) as u8;
+                let b = (val & 0xFF) as u8;
+                return (r as u32) | ((g as u32) << 8) | ((b as u32) << 16);
+            }
+        } else if s.len() == 8
+            && let Ok(val) = u32::from_str_radix(s, 16) {
+                let r = ((val >> 24) & 0xFF) as u8;
+                let g = ((val >> 16) & 0xFF) as u8;
+                let b = ((val >> 8) & 0xFF) as u8;
+                return (r as u32) | ((g as u32) << 8) | ((b as u32) << 16);
+            }
+        default_ref
+    }
+
+    /// Met à jour le pinceau de fond sombre du bandeau et l'applique à la classe Win32
+    pub fn set_bar_background_brush(color_hex: &str) {
+        let col = hex_to_colorref(color_hex, 0x002A170F); // #0f172a par défaut
+        unsafe {
+            let new_brush = CreateSolidBrush(col);
+            if !new_brush.is_null() {
+                let old_brush = BAR_BG_BRUSH.swap(new_brush as usize, Ordering::SeqCst) as HBRUSH;
+                if !old_brush.is_null() {
+                    DeleteObject(old_brush as HGDIOBJ);
+                }
+                let hwnd = BAR_HWND.load(Ordering::SeqCst) as HWND;
+                if !hwnd.is_null() && IsWindow(hwnd) != 0 {
+                    SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, new_brush as isize);
+                }
+            }
+        }
+    }
 
     pub const WM_APP_TRAY: u32 = WM_APP + 1;
     pub const WM_APP_HOTKEY: u32 = WM_APP + 2;
@@ -148,6 +218,13 @@ pub mod win32 {
         (files, pt)
     }
 
+    fn debug_log(s: &str) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("debug_bar.log") {
+            let _ = writeln!(f, "[{:?}] {}", std::time::SystemTime::now(), s);
+        }
+    }
+
     /// Subclass Window Procedure pour intercepter le vol de focus, résister à Win+D et gérer le Drag & Drop
     unsafe extern "system" fn bar_wnd_proc_hook(
         hwnd: HWND,
@@ -162,6 +239,25 @@ pub mod win32 {
                 // Supprime totalement le cadre non-client
                 return 0;
             }
+            0x0006 /* WM_ACTIVATE */
+            | 0x0014 /* WM_ERASEBKGND */
+            | 0x000F /* WM_PAINT */
+            | 0x0085 /* WM_NCPAINT */
+            | 0x0046 /* WM_WINDOWPOSCHANGING */
+            | 0x0047 /* WM_WINDOWPOSCHANGED */
+            | 0x0018 /* WM_SHOWWINDOW */
+            | 0x0112 /* WM_SYSCOMMAND */
+            | 0x007E /* WM_DISPLAYCHANGE */
+            | 0x001A /* WM_SETTINGCHANGE */ => {
+                debug_log(&format!("HOOK MSG: 0x{:04X} wparam: 0x{:X} lparam: 0x{:X}", msg, wparam, lparam));
+            }
+            _ => {}
+        }
+        match msg {
+            WM_NCCALCSIZE => {
+                // Supprime totalement le cadre non-client
+                return 0;
+            }
             WM_ACTIVATE => {
                 let is_inactive = (wparam & 0xFFFF) as u32 == WA_INACTIVE;
                 if is_inactive {
@@ -170,20 +266,40 @@ pub mod win32 {
                             unsafe {
                                 let progman = FindWindowW(PROGMAN_WIDE.as_ptr(), std::ptr::null());
                                 if !progman.is_null() {
-                                    SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
-                                    DESKTOP_PARENT.store(progman as usize, Ordering::SeqCst);
+                                    let cur_parent = GetWindowLongPtrW(hwnd, GWLP_HWNDPARENT);
+                                    if cur_parent != progman as isize {
+                                        SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
+                                        DESKTOP_PARENT.store(progman as usize, Ordering::SeqCst);
+                                    }
                                 }
                             }
                         }
                 } else {
                     unsafe {
-                        SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
-                        DESKTOP_PARENT.store(0, Ordering::SeqCst);
+                        let cur_parent = GetWindowLongPtrW(hwnd, GWLP_HWNDPARENT);
+                        if cur_parent != 0 {
+                            SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
+                            DESKTOP_PARENT.store(0, Ordering::SeqCst);
+                        }
                     }
                 }
             }
             WM_ERASEBKGND => {
-                // Empêche Windows d'effacer le fond avec un pinceau blanc standard
+                // Peint instantanément le fond avec le pinceau sombre configuré (élimine tout flash blanc)
+                let hdc = wparam as HDC;
+                if !hdc.is_null() {
+                    let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                    unsafe {
+                        GetClientRect(hwnd, &mut rc);
+                        let brush = BAR_BG_BRUSH.load(Ordering::SeqCst) as HBRUSH;
+                        if !brush.is_null() {
+                            FillRect(hdc, &rc, brush);
+                        } else {
+                            let black = GetStockObject(BLACK_BRUSH);
+                            FillRect(hdc, &rc, black as HBRUSH);
+                        }
+                    }
+                }
                 return 1;
             }
             WM_NCPAINT => {
@@ -192,6 +308,48 @@ pub mod win32 {
             WM_MOUSEACTIVATE => {
                 // Empêche formellement la fenêtre de voler le focus lors des clics souris ordinaires
                 return MA_NOACTIVATE as isize;
+            }
+            WM_DISPLAYCHANGE => {
+                // Changement de résolution ou d'écran : repeindre immédiatement en sombre
+                let brush = BAR_BG_BRUSH.load(Ordering::SeqCst) as HBRUSH;
+                if !brush.is_null() {
+                    unsafe {
+                        let hdc = GetDC(hwnd);
+                        if !hdc.is_null() {
+                            let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                            GetClientRect(hwnd, &mut rc);
+                            FillRect(hdc, &rc, brush);
+                            ReleaseDC(hwnd, hdc);
+                        }
+                    }
+                }
+                if let Ok(guard) = DISPLAY_CHANGE_CALLBACK.lock() {
+                    if let Some(cb) = guard.as_ref() {
+                        cb();
+                    }
+                }
+                return 0;
+            }
+            WM_SETTINGCHANGE => {
+                if wparam == SPI_SETWORKAREA as usize {
+                    let brush = BAR_BG_BRUSH.load(Ordering::SeqCst) as HBRUSH;
+                    if !brush.is_null() {
+                        unsafe {
+                            let hdc = GetDC(hwnd);
+                            if !hdc.is_null() {
+                                let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                                GetClientRect(hwnd, &mut rc);
+                                FillRect(hdc, &rc, brush);
+                                ReleaseDC(hwnd, hdc);
+                            }
+                        }
+                    }
+                    if let Ok(guard) = DISPLAY_CHANGE_CALLBACK.lock() {
+                        if let Some(cb) = guard.as_ref() {
+                            cb();
+                        }
+                    }
+                }
             }
             WM_DROPFILES => {
                 let (files, pt) = unsafe { extract_dropped_files(wparam as HDROP) };
@@ -251,6 +409,23 @@ pub mod win32 {
             SETTINGS_HWND.store(0, Ordering::SeqCst);
             return 0;
         }
+        if msg == WM_ERASEBKGND {
+            let hdc = wparam as HDC;
+            if !hdc.is_null() {
+                let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                unsafe {
+                    GetClientRect(hwnd, &mut rc);
+                    let brush = SETTINGS_BG_BRUSH.load(Ordering::SeqCst) as HBRUSH;
+                    if !brush.is_null() {
+                        FillRect(hdc, &rc, brush);
+                    } else {
+                        let black = GetStockObject(BLACK_BRUSH);
+                        FillRect(hdc, &rc, black as HBRUSH);
+                    }
+                }
+            }
+            return 1;
+        }
         if msg == WM_DROPFILES {
             let (files, pt) = unsafe { extract_dropped_files(wparam as HDROP) };
             if !files.is_empty()
@@ -273,13 +448,33 @@ pub mod win32 {
             RemoveWindowSubclass(hwnd, Some(settings_wnd_proc_hook), 102);
             SetWindowSubclass(hwnd, Some(settings_wnd_proc_hook), 102, 0);
 
-            // Supprimer le pinceau de fond blanc par défaut et activer le mode sombre immersif DWM
-            SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, 0);
+            // Supprimer le redraw auto complet sur resize
+            let style = GetClassLongW(hwnd, GCL_STYLE);
+            if (style & (CS_HREDRAW | CS_VREDRAW)) != 0 {
+                SetClassLongW(hwnd, GCL_STYLE, (style & !(CS_HREDRAW | CS_VREDRAW)) as i32);
+            }
+
+            // Pinceau de fond sombre officiel (#1e293b)
+            let mut brush = SETTINGS_BG_BRUSH.load(Ordering::SeqCst) as HBRUSH;
+            if brush.is_null() {
+                brush = CreateSolidBrush(0x003B291E);
+                SETTINGS_BG_BRUSH.store(brush as usize, Ordering::SeqCst);
+            }
+            SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, brush as isize);
+
+            // Mode sombre DWM immersif et désactivation impérative des transitions
             let dark: i32 = 1;
             let _ = DwmSetWindowAttribute(
                 hwnd,
                 DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
                 &dark as *const _ as *const _,
+                std::mem::size_of::<i32>() as u32,
+            );
+            let disable_transitions: i32 = 1;
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                3, // DWMWA_TRANSITIONS_FORCEDISABLED
+                &disable_transitions as *const _ as *const _,
                 std::mem::size_of::<i32>() as u32,
             );
 
@@ -302,10 +497,21 @@ pub mod win32 {
             RemoveWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101);
             SetWindowSubclass(hwnd, Some(bar_wnd_proc_hook), 101, 0);
 
-            // 2. Supprimer le pinceau de fond blanc par défaut de la classe de fenêtre
-            SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, 0);
+            // 2. Supprimer CS_HREDRAW | CS_VREDRAW pour éviter l'invalidation/effacement complet sur resize
+            let class_style = GetClassLongW(hwnd, GCL_STYLE);
+            if (class_style & (CS_HREDRAW | CS_VREDRAW)) != 0 {
+                SetClassLongW(hwnd, GCL_STYLE, (class_style & !(CS_HREDRAW | CS_VREDRAW)) as i32);
+            }
 
-            // 3. Activer le mode sombre immersif DWM pour éliminer les flashs clairs du compositeur
+            // 3. Assigner le pinceau de fond sombre officiel de la classe
+            let mut brush = BAR_BG_BRUSH.load(Ordering::SeqCst) as HBRUSH;
+            if brush.is_null() {
+                brush = CreateSolidBrush(0x002A170F); // #0f172a par défaut
+                BAR_BG_BRUSH.store(brush as usize, Ordering::SeqCst);
+            }
+            SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, brush as isize);
+
+            // 4. Activer le mode sombre immersif DWM et désactiver impérativement les transitions
             let dark: i32 = 1;
             let _ = DwmSetWindowAttribute(
                 hwnd,
@@ -313,8 +519,37 @@ pub mod win32 {
                 &dark as *const _ as *const _,
                 std::mem::size_of::<i32>() as u32,
             );
+            let disable_transitions: i32 = 1;
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                3, // DWMWA_TRANSITIONS_FORCEDISABLED
+                &disable_transitions as *const _ as *const _,
+                std::mem::size_of::<i32>() as u32,
+            );
 
-            // 4. Styles étendus : ToolWindow + NoActivate, JAMAIS de WS_EX_TOPMOST pour ne jamais écraser les applications actives
+            // Attributs Windows 11 pour forcer des bordures/légendes transparentes et coins sans flash
+            let color_none: u32 = 0xFFFFFFFE; // DWMWA_COLOR_NONE
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                34, // DWMWA_BORDER_COLOR
+                &color_none as *const _ as *const _,
+                std::mem::size_of::<u32>() as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                35, // DWMWA_CAPTION_COLOR
+                &color_none as *const _ as *const _,
+                std::mem::size_of::<u32>() as u32,
+            );
+            let do_not_round: u32 = 1; // DWMWCP_DONOTROUND
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                33, // DWMWA_WINDOW_CORNER_PREFERENCE
+                &do_not_round as *const _ as *const _,
+                std::mem::size_of::<u32>() as u32,
+            );
+
+            // 5. Styles étendus : ToolWindow + NoActivate, JAMAIS de WS_EX_TOPMOST pour ne jamais écraser les applications actives
             let cur_ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
             let mut ex_style = cur_ex | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
             ex_style &= !WS_EX_APPWINDOW;
@@ -323,7 +558,7 @@ pub mod win32 {
                 SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style as i32);
             }
 
-            // 5. Styles standard : TOUJOURS WS_POPUP (jamais WS_CHILD) pour préserver le moteur de rendu et les popovers
+            // 6. Styles standard : TOUJOURS WS_POPUP (jamais WS_CHILD) pour préserver le moteur de rendu et les popovers
             let cur_style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
             let mut style = cur_style & !(WS_CAPTION | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME | WS_CHILD);
             style |= WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VISIBLE;
@@ -358,12 +593,15 @@ pub mod win32 {
         }
         unsafe {
             let progman = FindWindowW(PROGMAN_WIDE.as_ptr(), std::ptr::null());
-            if enabled && !progman.is_null() {
-                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
-                DESKTOP_PARENT.store(progman as usize, Ordering::SeqCst);
+            let target = if enabled && !progman.is_null() {
+                progman as isize
             } else {
-                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
-                DESKTOP_PARENT.store(0, Ordering::SeqCst);
+                0
+            };
+            let cur = GetWindowLongPtrW(hwnd, GWLP_HWNDPARENT);
+            if cur != target {
+                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, target);
+                DESKTOP_PARENT.store(target as usize, Ordering::SeqCst);
             }
         }
     }
@@ -662,6 +900,8 @@ pub mod win32 {
         };
 
         unsafe {
+            let is_vis = IsWindowVisible(hwnd) != 0;
+            let show_flag = if is_vis { 0 } else { SWP_SHOWWINDOW };
             SetWindowPos(
                 hwnd,
                 HWND_NOTOPMOST,
@@ -669,10 +909,9 @@ pub mod win32 {
                 y,
                 w,
                 h,
-                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                SWP_NOACTIVATE | show_flag,
             );
-            // Invalider sans effacer le fond (bErase = 0) et sans forcer de UpdateWindow synchrone
-            // qui peignait en blanc avant que Slint n'ait terminé son rendu logiciel
+            // Invalider sans forcer d'effacement GDI par défaut (bErase = 0)
             InvalidateRect(hwnd, std::ptr::null(), 0);
         }
     }
@@ -1935,6 +2174,8 @@ pub mod win32 {
     pub fn to_wide_null(_s: &str) -> Vec<u16> { Vec::new() }
     pub fn find_bar_hwnd() -> *mut std::ffi::c_void { std::ptr::null_mut() }
     pub fn setup_settings_window_styles(_hwnd: *mut std::ffi::c_void) {}
+    pub fn set_bar_background_brush(_color_hex: &str) {}
+    pub fn set_display_change_callback<F>(_cb: F) where F: Fn() + Send + Sync + 'static {}
     pub fn set_drop_callback<F>(_cb: F) where F: Fn(Vec<String>, i32, i32, bool) + Send + Sync + 'static {}
     pub fn pick_file_dialog(_title: Option<&str>, _filter_desc: Option<&str>, _filter_exts: Option<&[&str]>) -> Option<PathBuf> { None }
     pub const IDM_ITEM_EDIT: usize = 1;
@@ -1997,5 +2238,22 @@ mod tests {
         assert!(get_target_working_directory("https://www.google.com").is_none());
         assert!(get_target_working_directory("http://localhost:8080").is_none());
         assert!(get_target_working_directory("mailto:test@example.com").is_none());
+    }
+
+    #[test]
+    fn test_hex_to_colorref() {
+        // #0f172a -> r=15 (0x0F), g=23 (0x17), b=42 (0x2A) -> 0x002A170F
+        let col = hex_to_colorref("#0f172a", 0);
+        assert_eq!(col, 0x002A170F);
+
+        // Avec alpha : #0f172af8 -> même RGB
+        let col_alpha = hex_to_colorref("#0f172af8", 0);
+        assert_eq!(col_alpha, 0x002A170F);
+
+        // Format court 3 caractères #f00 -> rouge 0x000000FF
+        assert_eq!(hex_to_colorref("#f00", 0), 0x000000FF);
+
+        // Invalide -> fallback par défaut
+        assert_eq!(hex_to_colorref("invalid", 0x123456), 0x123456);
     }
 }

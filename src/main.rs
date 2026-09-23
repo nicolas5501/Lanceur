@@ -135,6 +135,7 @@ fn update_bar_window_geometry(cfg: &AppConfig) {
         let bar_hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
         if !bar_hwnd.is_null() {
             let total_h = get_total_bar_height(cfg);
+            win32_utils::win32::set_bar_background_brush(&cfg.settings.bar_bg_color);
             win32_utils::win32::set_desktop_parent(bar_hwnd, cfg.settings.stay_on_top);
             win32_utils::win32::setup_bar_window_styles(
                 bar_hwnd,
@@ -358,6 +359,7 @@ fn show_bar_window(bar: &BarWindow, cfg: &AppConfig, is_expanded: bool) {
             bar.set_active_dropdown_idx(-1);
         }
 
+        win32_utils::win32::set_bar_background_brush(&cfg.settings.bar_bg_color);
         win32_utils::win32::set_desktop_parent(hwnd, cfg.settings.stay_on_top);
 
         // Applique les styles et synchronise le mode bureau persistant
@@ -1063,6 +1065,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             win32_utils::win32::BAR_EXPLICITLY_HIDDEN.store(false, Ordering::SeqCst);
 
             let total_h = get_total_bar_height(cfg);
+            win32_utils::win32::set_bar_background_brush(&cfg.settings.bar_bg_color);
             win32_utils::win32::set_desktop_parent(hwnd, cfg.settings.stay_on_top);
             win32_utils::win32::setup_bar_window_styles(
                 hwnd,
@@ -1178,25 +1181,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if win32_utils::win32::STAY_ON_TOP_ENABLED.load(Ordering::SeqCst)
                                 && !win32_utils::win32::BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst)
                                 && !bar_hwnd.is_null()
-                                && unsafe { IsWindowVisible(bar_hwnd) == 0 }
                             {
-                                unsafe {
-                                    ShowWindow(bar_hwnd, SW_SHOWNOACTIVATE);
-                                    SetWindowPos(
-                                        bar_hwnd,
-                                        HWND_TOP,
-                                        0,
-                                        0,
-                                        0,
-                                        0,
-                                        SWP_NOMOVE
-                                            | SWP_NOSIZE
-                                            | SWP_NOACTIVATE
-                                            | SWP_SHOWWINDOW,
-                                    );
+                                let style = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongW(bar_hwnd, windows_sys::Win32::UI::WindowsAndMessaging::GWL_STYLE) as u32 };
+                                let is_hidden = (style & windows_sys::Win32::UI::WindowsAndMessaging::WS_VISIBLE) == 0;
+                                let is_minimized = (style & windows_sys::Win32::UI::WindowsAndMessaging::WS_MINIMIZE) != 0;
+                                if is_hidden || is_minimized {
+                                    unsafe {
+                                        ShowWindow(bar_hwnd, SW_SHOWNOACTIVATE);
+                                        SetWindowPos(
+                                            bar_hwnd,
+                                            HWND_NOTOPMOST,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            SWP_NOMOVE
+                                                | SWP_NOSIZE
+                                                | SWP_NOACTIVATE
+                                                | SWP_SHOWWINDOW,
+                                        );
+                                    }
+                                    win32_utils::win32::BAR_WINDOW_VISIBLE
+                                        .store(true, Ordering::SeqCst);
                                 }
-                                win32_utils::win32::BAR_WINDOW_VISIBLE
-                                    .store(true, Ordering::SeqCst);
                             }
                         }
                     }
@@ -1253,6 +1260,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     win32_utils::win32::AUTOSTART_ENABLED.store(cfg.settings.autostart, Ordering::SeqCst);
                     register_all_hotkeys_for_app(msg_hwnd, &cfg);
                 }
+
+                // Enregistrer le callback de changement de résolution / écran
+                let app_cfg_display = app_cfg_clone.clone();
+                let bar_weak_display = bar_weak.clone();
+                win32_utils::win32::set_display_change_callback(move || {
+                    let cfg_clone = app_cfg_display.clone();
+                    let bw_clone = bar_weak_display.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        let cfg = cfg_clone.lock().unwrap();
+                        update_bar_window_geometry(&cfg);
+                        if let Some(bar) = bw_clone.upgrade() {
+                            refresh_bar_ui(&bar, &cfg);
+                            bar.window().request_redraw();
+                        }
+                    });
+                });
 
                 // Définition des handlers
                 let bw_for_toggle = bar_weak.clone();
@@ -3161,6 +3184,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let hwnd = win32_utils::win32::BAR_HWND.load(Ordering::SeqCst) as HWND;
                     if !hwnd.is_null() {
                         let total_h = get_total_bar_height(&cfg);
+                        win32_utils::win32::set_bar_background_brush(&cfg.settings.bar_bg_color);
                         win32_utils::win32::set_desktop_parent(hwnd, cfg.settings.stay_on_top);
                         win32_utils::win32::setup_bar_window_styles(
                             hwnd,
