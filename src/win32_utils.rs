@@ -44,6 +44,47 @@ pub mod win32 {
         }
     }
 
+    pub type RedrawCallback = Box<dyn Fn() + Send + Sync + 'static>;
+    pub static REDRAW_CALLBACK: std::sync::Mutex<Option<RedrawCallback>> = std::sync::Mutex::new(None);
+
+    pub fn set_redraw_callback<F>(cb: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        if let Ok(mut lock) = REDRAW_CALLBACK.lock() {
+            *lock = Some(Box::new(cb));
+        }
+    }
+
+    /// Déclenche un rafraîchissement complet immédiat de la fenêtre du bandeau via GDI + callback Slint
+    fn trigger_bar_redraw(hwnd: HWND) {
+        unsafe {
+            // Peindre immédiatement le fond avec le pinceau sombre avant que Slint ne prenne la main
+            let brush = BAR_BG_BRUSH.load(Ordering::SeqCst) as HBRUSH;
+            let hdc = GetDC(hwnd);
+            if !hdc.is_null() {
+                let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                GetClientRect(hwnd, &mut rc);
+                if !brush.is_null() {
+                    FillRect(hdc, &rc, brush);
+                } else {
+                    let black = GetStockObject(BLACK_BRUSH);
+                    FillRect(hdc, &rc, black as HBRUSH);
+                }
+                ReleaseDC(hwnd, hdc);
+            }
+            // Invalider + forcer un WM_PAINT synchrone pour que Slint redessine
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+            UpdateWindow(hwnd);
+        }
+        // Notifier Slint de déclencher un request_redraw depuis son thread
+        if let Ok(guard) = REDRAW_CALLBACK.lock() {
+            if let Some(cb) = guard.as_ref() {
+                cb();
+            }
+        }
+    }
+
     /// Convertit une chaîne hexadécimale (#RRGGBB ou #RRGGBBAA) en COLORREF Win32 (0x00bbggrr)
     pub fn hex_to_colorref(hex_str: &str, default_ref: u32) -> u32 {
         let s = hex_str.trim().trim_start_matches('#');
@@ -218,13 +259,6 @@ pub mod win32 {
         (files, pt)
     }
 
-    fn debug_log(s: &str) {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("debug_bar.log") {
-            let _ = writeln!(f, "[{:?}] {}", std::time::SystemTime::now(), s);
-        }
-    }
-
     /// Subclass Window Procedure pour intercepter le vol de focus, résister à Win+D et gérer le Drag & Drop
     unsafe extern "system" fn bar_wnd_proc_hook(
         hwnd: HWND,
@@ -234,25 +268,6 @@ pub mod win32 {
         _uid_subclass: usize,
         _ref_data: usize,
     ) -> LRESULT {
-        match msg {
-            WM_NCCALCSIZE => {
-                // Supprime totalement le cadre non-client
-                return 0;
-            }
-            0x0006 /* WM_ACTIVATE */
-            | 0x0014 /* WM_ERASEBKGND */
-            | 0x000F /* WM_PAINT */
-            | 0x0085 /* WM_NCPAINT */
-            | 0x0046 /* WM_WINDOWPOSCHANGING */
-            | 0x0047 /* WM_WINDOWPOSCHANGED */
-            | 0x0018 /* WM_SHOWWINDOW */
-            | 0x0112 /* WM_SYSCOMMAND */
-            | 0x007E /* WM_DISPLAYCHANGE */
-            | 0x001A /* WM_SETTINGCHANGE */ => {
-                debug_log(&format!("HOOK MSG: 0x{:04X} wparam: 0x{:X} lparam: 0x{:X}", msg, wparam, lparam));
-            }
-            _ => {}
-        }
         match msg {
             WM_NCCALCSIZE => {
                 // Supprime totalement le cadre non-client
@@ -374,18 +389,48 @@ pub mod win32 {
                 if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) && lparam != 0 {
                     let pos = unsafe { &mut *(lparam as *mut WINDOWPOS) };
                     // Empêcher le masquage automatique déclenché par Windows+D
-                    pos.flags &= !SWP_HIDEWINDOW;
+                    if (pos.flags & SWP_HIDEWINDOW) != 0 {
+                        pos.flags &= !SWP_HIDEWINDOW;
+                        pos.flags |= SWP_SHOWWINDOW;
+                    }
+                    if pos.hwndInsertAfter == HWND_BOTTOM {
+                        pos.hwndInsertAfter = HWND_TOP;
+                    }
                 }
             }
             WM_SHOWWINDOW => {
                 if wparam == 0 {
                     if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
-                        // Bloquer le masquage automatique déclenché par Windows+D
+                        // Bloquer le masquage automatique déclenché par Windows+D et réaffirmer immédiatement la visibilité
+                        unsafe {
+                            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                            SetWindowPos(
+                                hwnd,
+                                HWND_TOP,
+                                0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                            );
+                        }
+                        BAR_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
                         return 0;
                     }
                     BAR_WINDOW_VISIBLE.store(false, Ordering::SeqCst);
                 } else {
+                    // Fenêtre rendue visible : forcer un redraw immédiat pour éviter le fond blanc statique
                     BAR_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
+                    trigger_bar_redraw(hwnd);
+                }
+            }
+            WM_WINDOWPOSCHANGED => {
+                // Après tout changement de position/visibilité effectif, forcer un redraw
+                if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst) && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
+                    if lparam != 0 {
+                        let pos = unsafe { &*(lparam as *const WINDOWPOS) };
+                        // Redessiner uniquement si la fenêtre vient d'être montrée
+                        if (pos.flags & SWP_SHOWWINDOW) != 0 {
+                            trigger_bar_redraw(hwnd);
+                        }
+                    }
                 }
             }
             _ => {}
@@ -2176,6 +2221,7 @@ pub mod win32 {
     pub fn setup_settings_window_styles(_hwnd: *mut std::ffi::c_void) {}
     pub fn set_bar_background_brush(_color_hex: &str) {}
     pub fn set_display_change_callback<F>(_cb: F) where F: Fn() + Send + Sync + 'static {}
+    pub fn set_redraw_callback<F>(_cb: F) where F: Fn() + Send + Sync + 'static {}
     pub fn set_drop_callback<F>(_cb: F) where F: Fn(Vec<String>, i32, i32, bool) + Send + Sync + 'static {}
     pub fn pick_file_dialog(_title: Option<&str>, _filter_desc: Option<&str>, _filter_exts: Option<&[&str]>) -> Option<PathBuf> { None }
     pub const IDM_ITEM_EDIT: usize = 1;

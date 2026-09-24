@@ -1182,15 +1182,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 && !win32_utils::win32::BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst)
                                 && !bar_hwnd.is_null()
                             {
+                                let is_not_visible = unsafe { IsWindowVisible(bar_hwnd) == 0 };
+                                let mut cloaked: u32 = 0;
+                                let _ = unsafe {
+                                    windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute(
+                                        bar_hwnd,
+                                        14, // DWMWA_CLOAKED
+                                        &mut cloaked as *mut _ as *mut _,
+                                        std::mem::size_of::<u32>() as u32,
+                                    )
+                                };
+                                let is_cloaked = cloaked != 0;
                                 let style = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongW(bar_hwnd, windows_sys::Win32::UI::WindowsAndMessaging::GWL_STYLE) as u32 };
-                                let is_hidden = (style & windows_sys::Win32::UI::WindowsAndMessaging::WS_VISIBLE) == 0;
                                 let is_minimized = (style & windows_sys::Win32::UI::WindowsAndMessaging::WS_MINIMIZE) != 0;
-                                if is_hidden || is_minimized {
+                                if is_not_visible || is_cloaked || is_minimized {
                                     unsafe {
                                         ShowWindow(bar_hwnd, SW_SHOWNOACTIVATE);
                                         SetWindowPos(
                                             bar_hwnd,
-                                            HWND_NOTOPMOST,
+                                            HWND_TOP,
                                             0,
                                             0,
                                             0,
@@ -1272,6 +1282,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         update_bar_window_geometry(&cfg);
                         if let Some(bar) = bw_clone.upgrade() {
                             refresh_bar_ui(&bar, &cfg);
+                            bar.window().request_redraw();
+                        }
+                    });
+                });
+
+                // Enregistrer le callback de redraw (Win+D, WM_SHOWWINDOW, WM_WINDOWPOSCHANGED)
+                // Déclenché depuis bar_wnd_proc_hook pour forcer Slint à repeindre immédiatement
+                let bar_weak_redraw = bar_weak.clone();
+                win32_utils::win32::set_redraw_callback(move || {
+                    let bw_clone = bar_weak_redraw.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(bar) = bw_clone.upgrade() {
                             bar.window().request_redraw();
                         }
                     });
