@@ -273,31 +273,16 @@ pub mod win32 {
                 // Supprime totalement le cadre non-client
                 return 0;
             }
-            WM_ACTIVATE => {
-                let is_inactive = (wparam & 0xFFFF) as u32 == WA_INACTIVE;
-                if is_inactive {
-                    if STAY_ON_TOP_ENABLED.load(Ordering::SeqCst)
-                        && !BAR_EXPLICITLY_HIDDEN.load(Ordering::SeqCst) {
-                            unsafe {
-                                let progman = FindWindowW(PROGMAN_WIDE.as_ptr(), std::ptr::null());
-                                if !progman.is_null() {
-                                    let cur_parent = GetWindowLongPtrW(hwnd, GWLP_HWNDPARENT);
-                                    if cur_parent != progman as isize {
-                                        SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
-                                        DESKTOP_PARENT.store(progman as usize, Ordering::SeqCst);
-                                    }
-                                }
-                            }
-                        }
-                } else {
-                    unsafe {
-                        let cur_parent = GetWindowLongPtrW(hwnd, GWLP_HWNDPARENT);
-                        if cur_parent != 0 {
-                            SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
-                            DESKTOP_PARENT.store(0, Ordering::SeqCst);
-                        }
-                    }
-                }
+            WM_MOUSEACTIVATE => {
+                // Empêche formellement la fenêtre de voler le focus lors des clics souris ordinaires
+                return MA_NOACTIVATE as isize;
+            }
+            WM_NCACTIVATE => {
+                // Empêche Windows de redessiner le cadre / bordure en blanc lors des changements de focus
+                return 1;
+            }
+            WM_NCPAINT => {
+                return 0;
             }
             WM_ERASEBKGND => {
                 // Peint instantanément le fond avec le pinceau sombre configuré (élimine tout flash blanc)
@@ -317,13 +302,51 @@ pub mod win32 {
                 }
                 return 1;
             }
-            WM_NCPAINT => {
+            WM_PRINTCLIENT => {
+                let hdc = wparam as HDC;
+                if !hdc.is_null() {
+                    let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                    unsafe {
+                        GetClientRect(hwnd, &mut rc);
+                        let brush = BAR_BG_BRUSH.load(Ordering::SeqCst) as HBRUSH;
+                        if !brush.is_null() {
+                            FillRect(hdc, &rc, brush);
+                        } else {
+                            let black = GetStockObject(BLACK_BRUSH);
+                            FillRect(hdc, &rc, black as HBRUSH);
+                        }
+                    }
+                }
                 return 0;
             }
-            WM_MOUSEACTIVATE => {
-                // Empêche formellement la fenêtre de voler le focus lors des clics souris ordinaires
-                return MA_NOACTIVATE as isize;
+            WM_PAINT => {
+                // Peint immédiatement la surface en sombre via BeginPaint/EndPaint pour éviter
+                // que DefWindowProc/DWM n'expose une surface blanche avant le rendu Slint
+                let brush = BAR_BG_BRUSH.load(Ordering::SeqCst) as HBRUSH;
+                unsafe {
+                    let mut ps: PAINTSTRUCT = std::mem::zeroed();
+                    let hdc = BeginPaint(hwnd, &mut ps);
+                    if !hdc.is_null() {
+                        let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                        GetClientRect(hwnd, &mut rc);
+                        if !brush.is_null() {
+                            FillRect(hdc, &rc, brush);
+                        } else {
+                            let black = GetStockObject(BLACK_BRUSH);
+                            FillRect(hdc, &rc, black as HBRUSH);
+                        }
+                        EndPaint(hwnd, &ps);
+                    }
+                }
+                // Notifier Slint de dessiner immédiatement son interface par-dessus le fond sombre
+                if let Ok(guard) = REDRAW_CALLBACK.lock() {
+                    if let Some(cb) = guard.as_ref() {
+                        cb();
+                    }
+                }
+                return 0;
             }
+
             WM_DISPLAYCHANGE => {
                 // Changement de résolution ou d'écran : repeindre immédiatement en sombre
                 let brush = BAR_BG_BRUSH.load(Ordering::SeqCst) as HBRUSH;
@@ -717,10 +740,6 @@ pub mod win32 {
             return;
         }
         unsafe {
-            // 1. Détacher temporairement de Progman pour permettre l'élévation Z-Order au premier plan
-            SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
-            DESKTOP_PARENT.store(0, Ordering::SeqCst);
-
             let fore_wnd = GetForegroundWindow();
             let target_thread = if !fore_wnd.is_null() {
                 GetWindowThreadProcessId(fore_wnd, std::ptr::null_mut())
