@@ -73,9 +73,6 @@ pub mod win32 {
                 }
                 ReleaseDC(hwnd, hdc);
             }
-            // Invalider + forcer un WM_PAINT synchrone pour que Slint redessine
-            InvalidateRect(hwnd, std::ptr::null(), 0);
-            UpdateWindow(hwnd);
         }
         // Notifier Slint de déclencher un request_redraw depuis son thread
         if let Ok(guard) = REDRAW_CALLBACK.lock() {
@@ -315,33 +312,6 @@ pub mod win32 {
                             let black = GetStockObject(BLACK_BRUSH);
                             FillRect(hdc, &rc, black as HBRUSH);
                         }
-                    }
-                }
-                return 0;
-            }
-            WM_PAINT => {
-                // Peint immédiatement la surface en sombre via BeginPaint/EndPaint pour éviter
-                // que DefWindowProc/DWM n'expose une surface blanche avant le rendu Slint
-                let brush = BAR_BG_BRUSH.load(Ordering::SeqCst) as HBRUSH;
-                unsafe {
-                    let mut ps: PAINTSTRUCT = std::mem::zeroed();
-                    let hdc = BeginPaint(hwnd, &mut ps);
-                    if !hdc.is_null() {
-                        let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-                        GetClientRect(hwnd, &mut rc);
-                        if !brush.is_null() {
-                            FillRect(hdc, &rc, brush);
-                        } else {
-                            let black = GetStockObject(BLACK_BRUSH);
-                            FillRect(hdc, &rc, black as HBRUSH);
-                        }
-                        EndPaint(hwnd, &ps);
-                    }
-                }
-                // Notifier Slint de dessiner immédiatement son interface par-dessus le fond sombre
-                if let Ok(guard) = REDRAW_CALLBACK.lock() {
-                    if let Some(cb) = guard.as_ref() {
-                        cb();
                     }
                 }
                 return 0;
@@ -2320,5 +2290,44 @@ mod tests {
 
         // Invalide -> fallback par défaut
         assert_eq!(hex_to_colorref("invalid", 0x123456), 0x123456);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_class_background_brush() {
+        use windows_sys::Win32::Graphics::Gdi::*;
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+        use super::win32::*;
+        unsafe {
+            let class_name = to_wide_null("TestClassBrush");
+            let mut wc: WNDCLASSEXW = std::mem::zeroed();
+            wc.cbSize = std::mem::size_of::<WNDCLASSEXW>() as u32;
+            wc.lpfnWndProc = Some(DefWindowProcW);
+            wc.lpszClassName = class_name.as_ptr();
+            RegisterClassExW(&wc);
+
+            let hwnd = CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                class_name.as_ptr(),
+                WS_POPUP,
+                0, 0, 100, 100,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            );
+            assert!(!hwnd.is_null());
+
+            let brush = CreateSolidBrush(0x002A170F);
+            assert!(!brush.is_null());
+
+            SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, brush as isize);
+            let retrieved = GetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND);
+            assert_eq!(retrieved, brush as usize);
+
+            DestroyWindow(hwnd);
+            DeleteObject(brush as HGDIOBJ);
+        }
     }
 }
